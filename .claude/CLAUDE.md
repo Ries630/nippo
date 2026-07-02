@@ -18,7 +18,7 @@ cargo install --path crates/collector                     # ローカルイン�
 
 ### Rust バイナリを変更するとき
 - `crates/collector/src/` 以下を編集
-- `main.rs`: CLI 引数・source 選択、`filter.rs`: 日付フィルタ、`output.rs`: JSON/summary 出力、`session.rs`: 共通セッション表現、`sources/claude_code.rs`: Claude JSONL パーサ、`sources/codex.rs`: Codex 履歴パーサ
+- `main.rs`: CLI 引数・source 選択、`filter.rs`: 日付フィルタ、`output.rs`: JSON/summary 出力、`session.rs`: 共通セッション表現、`ledger.rs`: Unclear points の累積台帳・収束/発散判定、`sources/claude_code.rs`: Claude JSONL パーサ、`sources/codex.rs`: Codex 履歴パーサ
 - 変更後は `cargo fmt && cargo clippy -- -D warnings && cargo test` を実行
 
 ### スキルを変更するとき
@@ -34,6 +34,7 @@ cargo install --path crates/collector                     # ローカルイン�
   - `docs/templates/review-template.md` → `/nippo review`
   - `docs/templates/insight-template.md` → `/nippo insight`
   - `docs/templates/trend-template.md` → `/nippo trend`
+  - `/nippo ledger` はテンプレートなし（Rust バイナリの `nippo ledger` が `reports/*.md` を直接処理）
   - `docs/reflection-theory.md` → 全リフレクション系モードが参照
   - `docs/data-sources.md` → JSONL データソース仕様
 

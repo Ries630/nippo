@@ -133,6 +133,21 @@ Claude Code では `/nippo ...`、Codex では `$nippo ...` を使う。引数�
 | `/nippo insight` | 週・月単位の振り返り         | 7日              |
 | `/nippo trend`   | 長期の変化分析（三分割比較） | 90日（最低45日） |
 
+### 詰まりを累積で追う
+
+| コマンド        | 何を出すか                                  | 入力                  |
+| --------------- | ------------------------------------------- | --------------------- |
+| `/nippo ledger` | `## Unclear points` を横断集計して収束/発散判定 | `reports/nippo-*.md` (期間なし) |
+
+過去の日報の `## Unclear points` セクション
+（`Issue / Cause / General Fix Rule` の三項組）を時系列で読み込み、
+`reports/ledger.yaml` に正規化されたルール集合を累積する。各日について
+新規ルール数を観察し、2 日連続でゼロなら `[CONVERGED]`（この種の詰まりは
+学習済み）、3 日連続で非減少なら `[DIVERGENCE-SIGNAL]`（戦術的修正の限界、
+作業環境・道具・タスク選定そのものを変える合図）を表示する。
+詳細は [docs/reflection-theory.md](docs/reflection-theory.md) の「推論時
+Alignment / 自然言語による勾配降下」節を参照。
+
 ### 期間指定・プロジェクト指定
 
 全コマンド共通:

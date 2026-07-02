@@ -1,4 +1,5 @@
 mod filter;
+mod ledger;
 mod output;
 mod session;
 mod sources;
@@ -63,6 +64,7 @@ nippo スキルのデータ収集バックエンドとして動作する。
   /nippo review       評価面談・自己評価用
   /nippo insight      深い振り返り（ALACT モデル）
   /nippo trend 90     三分割変化分析
+  /nippo ledger       詰まりの累積集計と収束/発散判定
 
 https://github.com/nwiizo/nippo",
     after_help = "詳細: https://github.com/nwiizo/nippo"
@@ -119,6 +121,22 @@ enum Commands {
         /// Custom Codex data directory (default: ~/.codex)
         #[arg(long)]
         codex_dir: Option<PathBuf>,
+    },
+
+    /// Fold structured `## Unclear points` from past reports into a
+    /// cumulative `reports/ledger.yaml`, then emit a convergence /
+    /// divergence signal.
+    ///
+    /// Run this after generating one or more daily / reflection / insight
+    /// reports — each new report becomes one iteration in the streak.
+    Ledger {
+        /// Reports directory (default: ./reports)
+        #[arg(long, default_value = "reports")]
+        reports_dir: PathBuf,
+
+        /// Output ledger path (default: <reports_dir>/ledger.yaml)
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -213,8 +231,62 @@ fn run() -> Result<()> {
                 }
             }
         }
+        Commands::Ledger { reports_dir, out } => {
+            run_ledger(&reports_dir, out.as_deref())?;
+        }
     }
 
+    Ok(())
+}
+
+fn run_ledger(reports_dir: &std::path::Path, out: Option<&std::path::Path>) -> Result<()> {
+    if !reports_dir.is_dir() {
+        anyhow::bail!(
+            "reports dir not found: {} (run from a nippo project root, or pass --reports-dir)",
+            reports_dir.display()
+        );
+    }
+    let default_out = reports_dir.join("ledger.yaml");
+    let out_path = out.unwrap_or(&default_out);
+    let outcome = ledger::rebuild_from_scratch(reports_dir, out_path)?;
+    println!("ledger: {}", out_path.display());
+    if outcome.log.is_empty() {
+        println!(
+            "(no reports with `## Unclear points` found under {})",
+            reports_dir.display()
+        );
+        return Ok(());
+    }
+    for line in &outcome.log {
+        println!("  {line}");
+    }
+    println!();
+    match outcome.signal {
+        ledger::Signal::Converged => {
+            println!(
+                "[CONVERGED] {} consecutive report(s) with zero new unclear rules — \
+                 this class of struggle has stopped surfacing.",
+                ledger::CONVERGE_STREAK
+            );
+        }
+        ledger::Signal::Diverged => {
+            println!(
+                "[DIVERGENCE-SIGNAL] {} consecutive report(s) with non-decreasing \
+                 new-rule count — patching individual symptoms is not working. \
+                 Consider a structural change to your workflow / environment / habit, \
+                 not another tactical fix.",
+                ledger::DIVERGE_STREAK
+            );
+        }
+        ledger::Signal::Continue => {
+            println!(
+                "[CONTINUE] {} report(s) folded, {} cumulative rule(s) known. \
+                 Run again after your next /nippo daily report.",
+                outcome.ledger.reports.len(),
+                outcome.ledger.known_rules.len(),
+            );
+        }
+    }
     Ok(())
 }
 

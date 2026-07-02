@@ -4,7 +4,8 @@ description: >
   Claude Code / Codex のセッションログから日報・リフレクション・インサイトを生成する。
   /nippo と /nippo daily で日報、/nippo reflection で内省の問い、/nippo guide で学習支援、
   /nippo report で進捗報告、/nippo review で自己評価、/nippo insight で深い振り返り、
-  /nippo trend で長期変化分析を生成する。Rust バイナリ (nippo) でデータを収集する。
+  /nippo trend で長期変化分析、/nippo ledger で詰まりの累積集計と収束/発散判定を生成する。
+  Rust バイナリ (nippo) でデータを収集する。
 argument-hint: "[mode] [days] [project] [source]"
 allowed-tools: Read, Write, Bash(nippo *), Bash(cargo run *), Bash(mkdir *), Bash(gh issue *)
 context: fork
@@ -51,6 +52,7 @@ context: fork
 | review | review | 90日 | `nippo collect --days 90 --stats-only` |
 | insight | insight | 7日 | `nippo collect --days 7` |
 | trend | trend | 90日 | 3回 `nippo collect --from X --to Y --format summary` |
+| ledger | ledger | なし（`reports/nippo-*.md`） | `nippo ledger`（collect は実行しない） |
 | (数値のみ) | 日報 | その数値 | `nippo collect --days N` |
 
 `daily` は `(空)` と同じ日報モードのエイリアス。出力ファイル名は `reports/nippo-YYYY-MM-DD.md` を使う。
@@ -58,6 +60,10 @@ context: fork
 残りトークンのうち `claude` / `codex` / `all` は `--source` に渡す。数値があれば `--days` を置換。それ以外の文字列は `--project` に渡す。
 
 ## 収集と生成
+
+`ledger` モードは収集・テンプレートを使わない。このリポジトリ内なら `cargo run -q -p nippo -- ledger`、それ以外は `nippo ledger` を実行する。cwd の `reports/nippo-*.md` から `## Unclear points` セクションを横断パースして `reports/ledger.yaml` に累積し、CONVERGED / DIVERGENCE-SIGNAL / CONTINUE の判定を出力する。この判定はそのままユーザーに伝え、過剰に解釈しない。以上で完了。
+
+その他のモード:
 
 1. このリポジトリ内なら `cargo run -q -p nippo -- collect ...`、それ以外は `nippo collect ...` を Bash で実行（brief は出力を直接保存して完了）
 2. JSON を Read で読み込む
@@ -80,6 +86,7 @@ reflection / guide は同日の `reports/nippo-YYYY-MM-DD.md` があれば Read 
 
 4. テンプレートに従いレポートを Write で保存（日報モードは既存ファイルがあっても上書き）
 5. パスをユーザーに通知
+6. 日報（`Unclear points` セクションを含む）を生成した後は、`/nippo ledger` で詰まりを累積集計できることを一言案内する（自動では実行しない）
 
 ## 改善提案
 

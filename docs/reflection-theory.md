@@ -124,3 +124,31 @@ insight（週次・月次）の構造に使用する。
 3. **対比**: 「うまくいった場面とそうでない場面の違いは？」
 4. **仮説**: 「もし〜していたら？」で別の可能性を考えさせる
 5. **小ささ**: 「今後どうするか」ではなく「明日ひとつだけ変えるなら？」
+
+---
+
+## 補足: 推論時 Alignment / 自然言語による勾配降下
+
+近年の機械学習研究には、重みを更新せずプロンプトで学習的な挙動を引き出す
+試み（「推論時 Alignment」「自然言語による勾配降下 / natural-language
+gradient descent」）がある。検索キーワード: TextGrad、DSPy、OPRO、
+Reflexion / Self-Refine、および「in-context learning が勾配降下と等価な
+計算を実装できる」ことを示した研究群。直感的には、自然言語の指摘が loss
+信号、それを読んだ次回の出力分布の変化が勾配ステップに相当する。
+
+### nippo との対応
+
+ALACT の D（Trial）→ 翌日の A（Action）→ B（Looking back）の往復は、形式的
+には人間版の自然言語勾配降下と読める。
+
+| 自然言語勾配降下 | nippo の対応物 |
+|------------------|----------------|
+| loss 信号          | `Issue`（詰まり）と `Cause` |
+| 勾配の方向         | `General Fix Rule` |
+| optimizer ステップ | 翌日の作業（Active Experimentation） |
+| 最適化軌跡         | `reports/ledger.yaml` |
+| 収束               | `[CONVERGED]`（2 連続で新規 Rule ゼロ） |
+| 発散               | `[DIVERGENCE-SIGNAL]`（3 連続で新規 Rule 非減少） |
+
+注: これは類推であって、人間の学習過程と Transformer 内部の機構が同一である
+という主張ではない。
