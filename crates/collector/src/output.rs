@@ -465,11 +465,7 @@ fn compute_stats(sessions: &[RawSession], decisions: &[DecisionPoint]) -> Aggreg
             .then_with(|| a.project.cmp(&b.project))
     });
 
-    let avg_length = if total_prompts > 0 {
-        total_prompt_chars / total_prompts
-    } else {
-        0
-    };
+    let avg_length = total_prompt_chars.checked_div(total_prompts).unwrap_or(0);
 
     AggregateStats {
         projects_worked_on,
