@@ -1,12 +1,14 @@
 mod filter;
 mod ledger;
+#[cfg(feature = "tui")]
+mod ledger_tui;
 mod output;
 mod session;
 mod sources;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::filter::{DateFilter, Period};
 use crate::output::{SourceMeta, build_output, format_summary};
@@ -129,6 +131,9 @@ enum Commands {
     ///
     /// Run this after generating one or more daily / reflection / insight
     /// reports — each new report becomes one iteration in the streak.
+    ///
+    /// Pass `--tui` to open an interactive read-only dashboard instead of
+    /// printing the summary (requires a build with the `tui` feature).
     Ledger {
         /// Reports directory (default: ./reports)
         #[arg(long, default_value = "reports")]
@@ -137,6 +142,10 @@ enum Commands {
         /// Output ledger path (default: <reports_dir>/ledger.yaml)
         #[arg(long)]
         out: Option<PathBuf>,
+
+        /// Open an interactive read-only dashboard (requires the `tui` feature)
+        #[arg(long)]
+        tui: bool,
     },
 }
 
@@ -231,15 +240,19 @@ fn run() -> Result<()> {
                 }
             }
         }
-        Commands::Ledger { reports_dir, out } => {
-            run_ledger(&reports_dir, out.as_deref())?;
+        Commands::Ledger {
+            reports_dir,
+            out,
+            tui,
+        } => {
+            run_ledger(&reports_dir, out.as_deref(), tui)?;
         }
     }
 
     Ok(())
 }
 
-fn run_ledger(reports_dir: &std::path::Path, out: Option<&std::path::Path>) -> Result<()> {
+fn run_ledger(reports_dir: &Path, out: Option<&Path>, tui: bool) -> Result<()> {
     if !reports_dir.is_dir() {
         anyhow::bail!(
             "reports dir not found: {} (run from a nippo project root, or pass --reports-dir)",
@@ -249,14 +262,30 @@ fn run_ledger(reports_dir: &std::path::Path, out: Option<&std::path::Path>) -> R
     let default_out = reports_dir.join("ledger.yaml");
     let out_path = out.unwrap_or(&default_out);
     let outcome = ledger::rebuild_from_scratch(reports_dir, out_path)?;
-    println!("ledger: {}", out_path.display());
     if outcome.log.is_empty() {
+        println!("ledger: {}", out_path.display());
         println!(
             "(no reports with `## Unclear points` found under {})",
             reports_dir.display()
         );
         return Ok(());
     }
+    if tui {
+        #[cfg(feature = "tui")]
+        {
+            crate::ledger_tui::run(&outcome)?;
+            return Ok(());
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            anyhow::bail!(
+                "--tui requires a build with the `tui` feature: \
+                 cargo install --path crates/collector --features tui \
+                 (or cargo run -p nippo --features tui -- ledger --tui)"
+            );
+        }
+    }
+    println!("ledger: {}", out_path.display());
     for line in &outcome.log {
         println!("  {line}");
     }

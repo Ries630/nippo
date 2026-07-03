@@ -148,6 +148,12 @@ Claude Code では `/nippo ...`、Codex では `$nippo ...` を使う。引数�
 詳細は [docs/reflection-theory.md](docs/reflection-theory.md) の「推論時
 Alignment / 自然言語による勾配降下」節を参照。
 
+`nippo ledger --tui` は、同じ集計結果を対話的な読み取り専用ダッシュボードで
+表示する（収束/発散を色分けしたバッジ、レポートごとの new/reseen、新規ルール数の
+スパークライン、再出現ルールの一覧）。`tui` フィーチャ付きのビルドが必要:
+`cargo install --path crates/collector --features tui`。`q` / `Esc` で終了、`j`/`k`
+でレポートを移動する。
+
 ### 期間指定・プロジェクト指定
 
 全コマンド共通:

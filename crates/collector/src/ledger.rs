@@ -120,6 +120,40 @@ pub(crate) fn normalize_rule(s: &str) -> String {
         .to_lowercase()
 }
 
+/// The per-report `new_rules.len()` counts, in `ledger.reports` order — the
+/// series fed to the TUI sparkline. Kept feature-independent so it stays
+/// unit-tested regardless of the `tui` feature; only the TUI consumes it, so
+/// it reads as dead code in a build without that feature.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+pub(crate) fn new_rule_series(ledger: &Ledger) -> Vec<u64> {
+    ledger
+        .reports
+        .iter()
+        .map(|r| r.new_rules.len() as u64)
+        .collect()
+}
+
+/// Count, per normalized rule key, how many *distinct* reports mention it — a
+/// rule present in a report's `new_rules` OR `reseen_rules` counts once for
+/// that report. Keep only rules seen in >= 2 reports (the recurring themes),
+/// sorted by count descending then rule key ascending for ties.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+pub(crate) fn recurring_rules(ledger: &Ledger) -> Vec<(String, usize)> {
+    use std::collections::BTreeMap;
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for report in &ledger.reports {
+        let mut seen_this_report: BTreeSet<&str> = BTreeSet::new();
+        for key in report.new_rules.iter().chain(report.reseen_rules.iter()) {
+            if seen_this_report.insert(key.as_str()) {
+                *counts.entry(key.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut out: Vec<(String, usize)> = counts.into_iter().filter(|(_, c)| *c >= 2).collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    out
+}
+
 /// Pull the `## Unclear points` section out of a report and parse each
 /// `- Issue: / Cause: / General Fix Rule:` triple. `extract_section` looks for
 /// the heading at `###` depth first and falls back to `##`, so both depths are
@@ -396,6 +430,52 @@ fn format_log_line(entry: &ReportEntry, signal: Signal) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a `ReportEntry` with the given already-normalized new/reseen keys.
+    fn entry(new: &[&str], reseen: &[&str]) -> ReportEntry {
+        ReportEntry {
+            report: "r.md".into(),
+            date: None,
+            new_rules: new.iter().map(|s| s.to_string()).collect(),
+            reseen_rules: reseen.iter().map(|s| s.to_string()).collect(),
+            points: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn new_rule_series_follows_report_order() {
+        let ledger = Ledger {
+            reports: vec![
+                entry(&["x", "y"], &[]),
+                entry(&[], &["x"]),
+                entry(&["z"], &["x", "y"]),
+            ],
+            known_rules: BTreeSet::new(),
+        };
+        assert_eq!(new_rule_series(&ledger), vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn recurring_rules_filters_below_two_and_orders_ties() {
+        let ledger = Ledger {
+            reports: vec![
+                entry(&["alpha", "beta", "gamma"], &[]),
+                entry(&[], &["alpha", "beta", "gamma"]),
+                // `z` only ever appears once, so it must be filtered out.
+                entry(&["z"], &["gamma"]),
+            ],
+            known_rules: BTreeSet::new(),
+        };
+        // gamma=3 first; alpha/beta tie at 2 and break by ascending key.
+        assert_eq!(
+            recurring_rules(&ledger),
+            vec![
+                ("gamma".to_string(), 3),
+                ("alpha".to_string(), 2),
+                ("beta".to_string(), 2),
+            ]
+        );
+    }
 
     const SAMPLE_REPORT: &str = r#"# 日報 2026年05月11日
 

@@ -8,6 +8,7 @@ Rust バイナリ（データ収集）+ Claude Code / Codex スキル（レポ�
 ```bash
 cargo fmt && cargo clippy -- -D warnings && cargo test   # 品質チェック
 cargo build --release -p nippo                            # ビルド
+cargo build --release -p nippo --features tui             # ledger TUI 付きビルド
 cargo install --path crates/collector                     # ローカルインストール
 ```
 
@@ -18,7 +19,7 @@ cargo install --path crates/collector                     # ローカルイン�
 
 ### Rust バイナリを変更するとき
 - `crates/collector/src/` 以下を編集
-- `main.rs`: CLI 引数・source 選択、`filter.rs`: 日付フィルタ、`output.rs`: JSON/summary 出力、`session.rs`: 共通セッション表現、`ledger.rs`: Unclear points の累積台帳・収束/発散判定、`sources/claude_code.rs`: Claude JSONL パーサ、`sources/codex.rs`: Codex 履歴パーサ
+- `main.rs`: CLI 引数・source 選択、`filter.rs`: 日付フィルタ、`output.rs`: JSON/summary 出力、`session.rs`: 共通セッション表現、`ledger.rs`: Unclear points の累積台帳・収束/発散判定、`ledger_tui.rs`: ratatui ダッシュボード（`tui` feature、読み取り専用）、`sources/claude_code.rs`: Claude JSONL パーサ、`sources/codex.rs`: Codex 履歴パーサ
 - 変更後は `cargo fmt && cargo clippy -- -D warnings && cargo test` を実行
 
 ### スキルを変更するとき
