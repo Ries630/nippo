@@ -10,6 +10,7 @@
 - ソース: requested auto | resolved claude
 - プロジェクト: （`stats.projects_worked_on` の順。全件、または上位 N 件 + `... 他 N 件`）
 - セッション数: N
+- 集中: N ブロック（最長 N 分）/ プロジェクト切替 N 回（`stats.focus` をそのまま使う）
 
 **やったこと**
 （`stats.projects_worked_on` を起点に、活動量の多いプロジェクトから抽出・箇条書き）
