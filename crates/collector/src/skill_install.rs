@@ -227,14 +227,14 @@ pub(crate) fn install(
 
 fn find_repo_root(cwd: &Path) -> Result<Option<PathBuf>> {
     for candidate in cwd.ancestors() {
-        let manifest_path = candidate.join("Cargo.toml");
+        let manifest_path = candidate.join("crates/collector/Cargo.toml");
         let claude_skill = candidate.join(".claude/skills/nippo");
         if !manifest_path.is_file() || !claude_skill.is_dir() {
             continue;
         }
         let manifest = fs::read_to_string(&manifest_path)
             .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-        if manifest.contains("members = [\"crates/collector\"]") {
+        if manifest.contains("name = \"nippo\"") {
             return Ok(Some(candidate.to_path_buf()));
         }
     }
@@ -337,6 +337,25 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn create_repository_fixture(repo: &Path) -> Result<()> {
+        fs::write(
+            repo.join("Cargo.toml"),
+            "[workspace]\nresolver = \"2\"\nmembers = [\n  \"crates/collector\",\n  \"crates/other\",\n]\n",
+        )?;
+        let collector_dir = repo.join("crates/collector");
+        fs::create_dir_all(&collector_dir)?;
+        fs::write(
+            collector_dir.join("Cargo.toml"),
+            "[package]\nversion = \"0.1.4\"\nname = \"nippo\"\n",
+        )?;
+        for kind in [SkillKind::Claude, SkillKind::Codex] {
+            let source = repo.join(kind.relative_install_path());
+            fs::create_dir_all(&source)?;
+            fs::write(source.join("SKILL.md"), kind.skill_contents())?;
+        }
+        Ok(())
+    }
+
     #[test]
     fn embedded_assets_are_not_empty() {
         assert!(!CLAUDE_SKILL.trim().is_empty());
@@ -421,17 +440,8 @@ mod tests {
     fn installs_repository_symlinks_and_accepts_correct_existing_links() -> Result<()> {
         let home = TempDir::new().context("create temp home")?;
         let repo = TempDir::new().context("create temp repo")?;
-        fs::write(
-            repo.path().join("Cargo.toml"),
-            "[workspace]\nmembers = [\"crates/collector\"]\n",
-        )?;
-        for kind in [SkillKind::Claude, SkillKind::Codex] {
-            let source = repo.path().join(kind.relative_install_path());
-            fs::create_dir_all(&source)?;
-            fs::write(source.join("SKILL.md"), kind.skill_contents())?;
-        }
+        create_repository_fixture(repo.path())?;
         let nested_cwd = repo.path().join("crates/collector");
-        fs::create_dir_all(&nested_cwd)?;
 
         install(home.path(), &nested_cwd, SkillTarget::All, false)?;
         install(home.path(), &nested_cwd, SkillTarget::All, false)?;
@@ -444,6 +454,49 @@ mod tests {
                 &repo.path().join(kind.relative_install_path())
             )?);
         }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unexpected_symlink_requires_force_and_only_replaces_the_link() -> Result<()> {
+        let home = TempDir::new().context("create temp home")?;
+        let repo = TempDir::new().context("create temp repo")?;
+        let unrelated = TempDir::new().context("create unrelated target")?;
+        create_repository_fixture(repo.path())?;
+
+        let destination = home.path().join(SkillKind::Claude.relative_install_path());
+        let parent = destination.parent().context("destination parent")?;
+        fs::create_dir_all(parent)?;
+        fs::write(unrelated.path().join("keep.txt"), "preserve me")?;
+        std::os::unix::fs::symlink(unrelated.path(), &destination)?;
+
+        let error = install(
+            home.path(),
+            &repo.path().join("crates/collector"),
+            SkillTarget::Claude,
+            false,
+        )
+        .expect_err("unexpected symlink should require --force");
+        assert!(error.to_string().contains("--force"));
+        assert!(symlink_points_to(&destination, unrelated.path())?);
+
+        install(
+            home.path(),
+            &repo.path().join("crates/collector"),
+            SkillTarget::Claude,
+            true,
+        )?;
+
+        assert!(fs::symlink_metadata(&destination)?.file_type().is_symlink());
+        assert!(symlink_points_to(
+            &destination,
+            &repo.path().join(SkillKind::Claude.relative_install_path())
+        )?);
+        assert_eq!(
+            fs::read_to_string(unrelated.path().join("keep.txt"))?,
+            "preserve me"
+        );
         Ok(())
     }
 }

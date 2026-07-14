@@ -137,8 +137,8 @@ pub(crate) fn new_rule_series(ledger: &Ledger) -> Vec<u64> {
 /// Count, per normalized rule key, how many *distinct* reports mention it — a
 /// rule present in a report's `new_rules` OR `reseen_rules` counts once for
 /// that report. Keep only rules seen in >= 2 reports (the recurring themes),
-/// sorted by count descending then rule key ascending for ties.
-#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+/// sorted by count descending then rule key ascending for ties. Shared by the
+/// export path and the optional TUI.
 pub(crate) fn recurring_rules(ledger: &Ledger) -> Vec<(String, usize)> {
     use std::collections::BTreeMap;
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -163,8 +163,8 @@ pub(crate) struct ExportCandidate {
     pub(crate) last_seen: String,
 }
 
-/// Build agent-config candidates from the same recurring-rule selection used
-/// by the TUI. Dates come from the reports that mention each normalized rule.
+/// Build agent-config candidates from the shared recurring-rule selection.
+/// Dates come from the reports that mention each normalized rule.
 pub(crate) fn export_candidates(ledger: &Ledger) -> Vec<ExportCandidate> {
     recurring_rules(ledger)
         .into_iter()
@@ -195,11 +195,13 @@ fn report_mentions_rule(report: &ReportEntry, key: &str) -> bool {
         .any(|rule| rule == key)
 }
 
+/// Recover the latest original spelling for a normalized rule key.
 fn display_rule(ledger: &Ledger, key: &str) -> String {
     ledger
         .reports
         .iter()
-        .flat_map(|report| &report.points)
+        .rev()
+        .flat_map(|report| report.points.iter().rev())
         .find_map(|point| {
             let raw = if point.rule.is_empty() {
                 &point.issue
@@ -575,8 +577,18 @@ mod tests {
     fn export_candidates_include_only_reseen_rules() {
         let mut first = entry(&["repeat this", "seen once"], &[]);
         first.date = Some("2026-05-01".to_string());
+        first.points = vec![UnclearPoint {
+            issue: "first issue".to_string(),
+            cause: "first cause".to_string(),
+            rule: "REPEAT THIS".to_string(),
+        }];
         let mut second = entry(&[], &["repeat this"]);
         second.date = Some("2026-05-03".to_string());
+        second.points = vec![UnclearPoint {
+            issue: "second issue".to_string(),
+            cause: "second cause".to_string(),
+            rule: "Repeat This".to_string(),
+        }];
         let ledger = Ledger {
             reports: vec![first, second],
             known_rules: BTreeSet::new(),
@@ -585,7 +597,7 @@ mod tests {
         assert_eq!(
             export_candidates(&ledger),
             vec![ExportCandidate {
-                rule: "repeat this".to_string(),
+                rule: "Repeat This".to_string(),
                 occurrences: 2,
                 first_seen: "2026-05-01".to_string(),
                 last_seen: "2026-05-03".to_string(),
@@ -611,6 +623,29 @@ mod tests {
         assert!(markdown.contains(
             "- check inputs first (occurrences: 2; first seen: 2026-05-01; last seen: 2026-05-02)"
         ));
+    }
+
+    #[test]
+    fn formats_empty_export_when_no_rules_recur() {
+        let ledger = Ledger {
+            reports: vec![entry(&["seen once"], &[])],
+            known_rules: BTreeSet::new(),
+        };
+
+        assert!(format_export(&ledger).contains("_No recurring rules found._"));
+    }
+
+    #[test]
+    fn write_export_creates_parent_directories_and_file() -> Result<()> {
+        let dir = tempfile::TempDir::new().context("create temp directory")?;
+        let path = dir.path().join("nested/reports/ledger-export.md");
+        let ledger = Ledger::default();
+
+        write_export(&path, &ledger)?;
+
+        assert!(path.is_file());
+        assert_eq!(std::fs::read_to_string(&path)?, format_export(&ledger));
+        Ok(())
     }
 
     const SAMPLE_REPORT: &str = r#"# 日報 2026年05月11日

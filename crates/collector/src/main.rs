@@ -80,6 +80,7 @@ nippo スキルのデータ収集バックエンドとして動作する。
 スキルと組み合わせて使う:
   /nippo              日報（事実 + 意思決定 + 用語レビュー）
   /nippo reflection   問いのみ（自分で振り返る）
+  /nippo plan         前日の振り返りから今日の実験候補を提示
   /nippo guide        回答 + 学ぶべき概念
   /nippo report       上司・メンター向け進捗報告
   /nippo review       評価面談・自己評価用
@@ -456,12 +457,16 @@ fn source_name(source: &DataSource) -> &'static str {
     }
 }
 
+/// Resolve the home used by collection defaults, falling back to `/` when
+/// `HOME` is unavailable so existing collect behavior remains permissive.
 fn dirs_home() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/"))
 }
 
+/// Resolve the required skill-install destination and reject a missing or
+/// empty `HOME` instead of writing into an unintended fallback directory.
 fn resolve_home_dir() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)

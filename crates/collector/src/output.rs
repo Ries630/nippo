@@ -366,7 +366,8 @@ struct FocusInterval<'a> {
 }
 
 /// Aggregate uninterrupted work blocks independently from the broader stats
-/// fold so the 30-minute boundary and project switches remain testable.
+/// fold. A gap of 30 minutes or more starts a new block, and a project switch
+/// is counted only between adjacent sessions that remain in the same block.
 pub(crate) fn compute_focus_stats(sessions: &[RawSession]) -> FocusStats {
     let mut intervals: Vec<FocusInterval<'_>> = sessions
         .iter()
@@ -390,18 +391,19 @@ pub(crate) fn compute_focus_stats(sessions: &[RawSession]) -> FocusStats {
         return FocusStats::default();
     };
 
-    let context_switches = intervals
-        .windows(2)
-        .filter(|pair| pair[0].project != pair[1].project)
-        .count();
+    let mut context_switches = 0usize;
     let mut focus_blocks = 1usize;
     let mut block_start = first.start;
     let mut block_end = first.end;
     let mut longest_focus_minutes = 0i64;
+    let mut previous_project = first.project;
 
     for interval in intervals.iter().skip(1) {
         let gap = interval.start - block_end;
         if gap < chrono::Duration::minutes(30) {
+            if interval.project != previous_project {
+                context_switches += 1;
+            }
             if interval.end > block_end {
                 block_end = interval.end;
             }
@@ -412,6 +414,7 @@ pub(crate) fn compute_focus_stats(sessions: &[RawSession]) -> FocusStats {
             block_start = interval.start;
             block_end = interval.end;
         }
+        previous_project = interval.project;
     }
     longest_focus_minutes = longest_focus_minutes.max((block_end - block_start).num_minutes());
 
@@ -640,6 +643,16 @@ mod tests {
         ];
 
         assert_eq!(compute_focus_stats(&sessions).context_switches, 2);
+    }
+
+    #[test]
+    fn does_not_count_project_switches_after_a_thirty_minute_gap() {
+        let sessions = vec![
+            timed_session("alpha", "a", "2026-04-01T09:00:00Z", "2026-04-01T09:10:00Z"),
+            timed_session("beta", "b", "2026-04-01T09:40:00Z", "2026-04-01T10:00:00Z"),
+        ];
+
+        assert_eq!(compute_focus_stats(&sessions).context_switches, 0);
     }
 
     #[test]
