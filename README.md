@@ -69,27 +69,21 @@ Claude Code では `/nippo`、Codex では `$nippo` で同じ日報生成フロ�
 ## インストール
 
 ```bash
-# 1. Rust バイナリ
 cargo install nippo
-
-# 2. リポジトリ取得
-git clone https://github.com/nwiizo/nippo && cd nippo
-
-# 3-a. Claude Code スキル（シンボリックリンク推奨）
-ln -s "$(pwd)/.claude/skills/nippo" ~/.claude/skills/nippo
-
-# 3-b. Codex スキルをグローバルに使う場合
-mkdir -p ~/.agents/skills
-ln -s "$(pwd)/.agents/skills/nippo" ~/.agents/skills/nippo
+nippo skill install
 ```
 
-Codex は repo 内の `.agents/skills/` も自動検出するので、このリポジトリ内で使うだけなら追加インストールなしでも使える。
-Codex 対応後は、skill が見えている環境なら `$nippo` でそのまま実行できる。
+これで Claude Code 用の `~/.claude/skills/nippo` と Codex 用の
+`~/.agents/skills/nippo` がセットアップされる。片方だけ入れる場合は
+`--target claude` または `--target codex` を指定する。既存のインストールを
+置き換える場合は `--force` を付ける。
 
-シンボリックリンクにすると `git pull` でスキルとテンプレートの更新が自動反映される。
-スキルディレクトリ内の `docs` シンボリックリンクにより、どのディレクトリから `/nippo` を実行してもテンプレートが正しく読み込まれる。
+通常はバイナリに埋め込まれたスキルとテンプレートを書き出す。nippo の
+リポジトリ内（またはその子ディレクトリ）で実行した場合はリポジトリを自動検出し、
+各スキルへのシンボリックリンクを作るため、checkout の更新がそのまま反映される。
 
-コピーする場合は `cp -r .claude/skills/nippo ~/.claude/skills/nippo`（テンプレート更新時は再コピーが必要）。
+Windows の git checkout ではクレート内の埋め込み用シンボリックリンクが
+通常ファイルになることがあるため、シンボリックリンクを有効にした環境で package を作成する。
 
 **要件**: [Claude Code](https://claude.com/claude-code) または Codex + Rust 1.85+
 

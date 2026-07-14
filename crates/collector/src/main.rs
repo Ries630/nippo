@@ -4,6 +4,7 @@ mod ledger;
 mod ledger_tui;
 mod output;
 mod session;
+mod skill_install;
 mod sources;
 
 use anyhow::Result;
@@ -13,6 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::filter::{DateFilter, Period};
 use crate::output::{SourceMeta, build_output, format_summary};
 use crate::session::RawSession;
+use crate::skill_install::{SkillTarget, install as install_skill};
 use crate::sources::claude_code::{
     collect_sessions as collect_claude_sessions,
     discover_session_files as discover_claude_session_files,
@@ -42,6 +44,20 @@ enum DataSource {
     All,
 }
 
+#[derive(Subcommand)]
+enum SkillAction {
+    /// Install the nippo skill for Claude Code, Codex, or both
+    Install {
+        /// Skill host to install for
+        #[arg(long, value_enum, default_value = "all")]
+        target: SkillTarget,
+
+        /// Replace an existing file, directory, or unexpected symlink
+        #[arg(long)]
+        force: bool,
+    },
+}
+
 #[derive(Parser)]
 #[command(
     name = "nippo",
@@ -57,6 +73,9 @@ nippo スキルのデータ収集バックエンドとして動作する。
   nippo collect --period last-week        先週のデータ
   nippo collect --project myapp           プロジェクトで絞り込み
   nippo collect --source codex            Codex 履歴のみ
+
+スキルをセットアップする:
+  nippo skill install                     Claude Code + Codex
 
 スキルと組み合わせて使う:
   /nippo              日報（事実 + 意思決定 + 用語レビュー）
@@ -150,6 +169,12 @@ enum Commands {
         /// Export recurring General Fix Rules as agent-config candidates
         #[arg(long)]
         export: bool,
+    },
+
+    /// Manage Claude Code and Codex skills
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
     },
 }
 
@@ -251,6 +276,14 @@ fn run() -> Result<()> {
             export,
         } => {
             run_ledger(&reports_dir, out.as_deref(), tui, export)?;
+        }
+        Commands::Skill {
+            action: SkillAction::Install { target, force },
+        } => {
+            let home_dir = resolve_home_dir()?;
+            let cwd = std::env::current_dir()?;
+            let report = install_skill(&home_dir, &cwd, target, force)?;
+            report.print();
         }
     }
 
@@ -427,4 +460,11 @@ fn dirs_home() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/"))
+}
+
+fn resolve_home_dir() -> Result<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("HOME is not set; cannot determine skill install directory"))
 }

@@ -42,9 +42,10 @@ cargo install --path crates/collector                     # ローカルイン�
 
 ### 新しいモードを追加するとき
 1. `docs/templates/` にテンプレートファイルを作成
-2. `SKILL.md` の引数パースルール・コマンド一覧・ステップ2・出力ルール・参照リソースを更新
-3. `README.md` のコマンド一覧を更新
-4. この `CLAUDE.md` のテンプレート対応表を更新
+2. `crates/collector/src/skill_install.rs` の埋め込みテンプレート一覧に追加
+3. `SKILL.md` の引数パースルール・コマンド一覧・ステップ2・出力ルール・参照リソースを更新
+4. `README.md` のコマンド一覧を更新
+5. この `CLAUDE.md` のテンプレート対応表を更新
 
 ## 制約
 
