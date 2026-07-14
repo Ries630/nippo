@@ -67,12 +67,15 @@ Examples:
 - Do not use Python for data collection.
 - Use `stats` as-is. Do not recalculate counters in prose.
 - Write reports in Japanese.
+- Do not recommend books or URLs (hallucination risk). Give concept names and search keywords instead.
+- For `reflection` and `guide`, also read the same-day `reports/nippo-YYYY-MM-DD.md` if it exists.
+- If the first token is neither a mode name, a number, nor a source selector, treat it as a project filter and run the default daily mode with `--project`.
 - Date boundaries follow the machine's local timezone. `--days 1` and `daily` mean the current local calendar day.
 - Treat one token matching `claude`, `codex`, or `all` as the source selector and pass it through to `--source`.
 - `Codex` report data comes from `history.jsonl`, `state_5.sqlite`, and rollout data referenced by `rollout_path`. Treat `logs_2.sqlite` as diagnostics only.
 - Codex-derived reports may have sparse assistant/tool metrics. State that explicitly instead of inventing numbers.
 - For daily reports, copy `meta.source`, `meta.total_sessions`, `stats.projects_worked_on`, and `stats.tool_frequency` from the collected JSON instead of inferring them from an older report.
-- Cover the activity-heavy projects first. Use `stats.projects_worked_on` order and give the top 3-5 projects their own section before collapsing anything into `その他`.
+- Cover the activity-heavy projects first. Use `stats.projects_worked_on` order (= `message_count` descending) and give the top 3-5 projects their own section before collapsing anything into `その他`.
 - If you show only a subset of `decisions`, explicitly state `全N件中M件を記載`.
 - If the current report generation itself appears as a tiny `nippo` project, keep it in the header stats but label it explicitly as report generation/editing and keep the body treatment minimal.
 - Sanitize reference links before writing them. Do not copy malformed URL fragments with trailing Japanese text or punctuation.

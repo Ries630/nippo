@@ -25,6 +25,7 @@ cargo install --path crates/collector                     # ローカルイン�
 ### スキルを変更するとき
 - `.claude/skills/nippo/SKILL.md`: コマンドルーティング・実行手順
 - `.agents/skills/nippo/SKILL.md`: Codex 用 skill
+- 共通ルール（禁止事項・モード定義・出力ルール）を変更したら両 SKILL.md に同期する。片方だけの変更はプラットフォーム固有の理由がある場合のみ
 - `docs/templates/`: 各モードのテンプレート
 - `docs/`: リフレクション理論・データソース仕様
 - テンプレートファイル名とモード名の対応:
