@@ -146,6 +146,10 @@ enum Commands {
         /// Open an interactive read-only dashboard (requires the `tui` feature)
         #[arg(long)]
         tui: bool,
+
+        /// Export recurring General Fix Rules as agent-config candidates
+        #[arg(long)]
+        export: bool,
     },
 }
 
@@ -244,15 +248,16 @@ fn run() -> Result<()> {
             reports_dir,
             out,
             tui,
+            export,
         } => {
-            run_ledger(&reports_dir, out.as_deref(), tui)?;
+            run_ledger(&reports_dir, out.as_deref(), tui, export)?;
         }
     }
 
     Ok(())
 }
 
-fn run_ledger(reports_dir: &Path, out: Option<&Path>, tui: bool) -> Result<()> {
+fn run_ledger(reports_dir: &Path, out: Option<&Path>, tui: bool, export: bool) -> Result<()> {
     if !reports_dir.is_dir() {
         anyhow::bail!(
             "reports dir not found: {} (run from a nippo project root, or pass --reports-dir)",
@@ -262,6 +267,11 @@ fn run_ledger(reports_dir: &Path, out: Option<&Path>, tui: bool) -> Result<()> {
     let default_out = reports_dir.join("ledger.yaml");
     let out_path = out.unwrap_or(&default_out);
     let outcome = ledger::rebuild_from_scratch(reports_dir, out_path)?;
+    if export {
+        let export_path = reports_dir.join("ledger-export.md");
+        ledger::write_export(&export_path, &outcome.ledger)?;
+        println!("export: {}", export_path.display());
+    }
     if outcome.log.is_empty() {
         println!("ledger: {}", out_path.display());
         println!(

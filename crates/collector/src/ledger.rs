@@ -26,6 +26,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 /// Convergence threshold: this many *consecutive* zero-new-rule reports stops
@@ -152,6 +153,99 @@ pub(crate) fn recurring_rules(ledger: &Ledger) -> Vec<(String, usize)> {
     let mut out: Vec<(String, usize)> = counts.into_iter().filter(|(_, c)| *c >= 2).collect();
     out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     out
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ExportCandidate {
+    pub(crate) rule: String,
+    pub(crate) occurrences: usize,
+    pub(crate) first_seen: String,
+    pub(crate) last_seen: String,
+}
+
+/// Build agent-config candidates from the same recurring-rule selection used
+/// by the TUI. Dates come from the reports that mention each normalized rule.
+pub(crate) fn export_candidates(ledger: &Ledger) -> Vec<ExportCandidate> {
+    recurring_rules(ledger)
+        .into_iter()
+        .map(|(key, occurrences)| {
+            let mut dates: Vec<&str> = ledger
+                .reports
+                .iter()
+                .filter(|report| report_mentions_rule(report, &key))
+                .filter_map(|report| report.date.as_deref())
+                .collect();
+            dates.sort_unstable();
+
+            ExportCandidate {
+                rule: display_rule(ledger, &key),
+                occurrences,
+                first_seen: dates.first().copied().unwrap_or("unknown").to_string(),
+                last_seen: dates.last().copied().unwrap_or("unknown").to_string(),
+            }
+        })
+        .collect()
+}
+
+fn report_mentions_rule(report: &ReportEntry, key: &str) -> bool {
+    report
+        .new_rules
+        .iter()
+        .chain(report.reseen_rules.iter())
+        .any(|rule| rule == key)
+}
+
+fn display_rule(ledger: &Ledger, key: &str) -> String {
+    ledger
+        .reports
+        .iter()
+        .flat_map(|report| &report.points)
+        .find_map(|point| {
+            let raw = if point.rule.is_empty() {
+                &point.issue
+            } else {
+                &point.rule
+            };
+            (normalize_rule(raw) == key).then(|| raw.clone())
+        })
+        .unwrap_or_else(|| key.to_string())
+}
+
+pub(crate) fn format_export(ledger: &Ledger) -> String {
+    let candidates = export_candidates(ledger);
+    let mut markdown = String::from("# Candidate General Fix Rules\n\n");
+    markdown.push_str(
+        "These are candidates only. A human must curate them before copying them as-is into CLAUDE.md or AGENTS.md.\n",
+    );
+
+    if candidates.is_empty() {
+        markdown.push_str("\n_No recurring rules found._\n");
+        return markdown;
+    }
+
+    markdown.push('\n');
+    for candidate in candidates {
+        writeln!(
+            markdown,
+            "- {} (occurrences: {}; first seen: {}; last seen: {})",
+            candidate.rule, candidate.occurrences, candidate.first_seen, candidate.last_seen,
+        )
+        .ok();
+    }
+    markdown
+}
+
+pub(crate) fn write_export(path: &Path, ledger: &Ledger) -> Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(path, format_export(ledger))
+        .with_context(|| format!("writing ledger export {}", path.display()))?;
+    Ok(())
 }
 
 /// Pull the `## Unclear points` section out of a report and parse each
@@ -475,6 +569,48 @@ mod tests {
                 ("beta".to_string(), 2),
             ]
         );
+    }
+
+    #[test]
+    fn export_candidates_include_only_reseen_rules() {
+        let mut first = entry(&["repeat this", "seen once"], &[]);
+        first.date = Some("2026-05-01".to_string());
+        let mut second = entry(&[], &["repeat this"]);
+        second.date = Some("2026-05-03".to_string());
+        let ledger = Ledger {
+            reports: vec![first, second],
+            known_rules: BTreeSet::new(),
+        };
+
+        assert_eq!(
+            export_candidates(&ledger),
+            vec![ExportCandidate {
+                rule: "repeat this".to_string(),
+                occurrences: 2,
+                first_seen: "2026-05-01".to_string(),
+                last_seen: "2026-05-03".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn formats_export_as_agent_config_candidates() {
+        let mut first = entry(&["check inputs first"], &[]);
+        first.date = Some("2026-05-01".to_string());
+        let mut second = entry(&[], &["check inputs first"]);
+        second.date = Some("2026-05-02".to_string());
+        let ledger = Ledger {
+            reports: vec![first, second],
+            known_rules: BTreeSet::new(),
+        };
+
+        let markdown = format_export(&ledger);
+
+        assert!(markdown.starts_with("# Candidate General Fix Rules\n"));
+        assert!(markdown.contains("A human must curate them before copying them as-is"));
+        assert!(markdown.contains(
+            "- check inputs first (occurrences: 2; first seen: 2026-05-01; last seen: 2026-05-02)"
+        ));
     }
 
     const SAMPLE_REPORT: &str = r#"# 日報 2026年05月11日
