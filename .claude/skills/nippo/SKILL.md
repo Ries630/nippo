@@ -1,12 +1,15 @@
 ---
 name: nippo
 description: >
+  ユーザーが日報・振り返り・作業まとめ・週報・自己評価を求めたときに、
   Claude Code / Codex のセッションログから日報・リフレクション・インサイトを生成する。
   /nippo と /nippo daily で日報、/nippo reflection で内省の問い、/nippo guide で学習支援、
   /nippo report で進捗報告、/nippo review で自己評価、/nippo insight で深い振り返り、
-  /nippo trend で長期変化分析を生成する。Rust バイナリ (nippo) でデータを収集する。
+  /nippo trend で長期変化分析、/nippo plan で朝の行動実験、
+  /nippo ledger で詰まりの累積集計と収束/発散判定を生成する。
+  Rust バイナリ (nippo) でデータを収集する。
 argument-hint: "[mode] [days] [project] [source]"
-allowed-tools: Read, Write, Bash(nippo *), Bash(cargo run *), Bash(mkdir *), Bash(gh issue *)
+allowed-tools: Read, Write, Glob, Bash(nippo *), Bash(cargo run -q -p nippo *), Bash(mkdir -p reports), Bash(gh issue list *), Bash(gh issue create *)
 context: fork
 ---
 
@@ -31,7 +34,9 @@ context: fork
 - このリポジトリ内で実行している場合は、グローバル `nippo` より `cargo run -q -p nippo -- collect ...` を優先する（ローカル実装が新しい可能性があるため）
 - 日報モードでは、このターンで取得した JSON を唯一の根拠にする。既存の `reports/nippo-YYYY-MM-DD.md` は読まないし、続きから直さない
 - 日報のヘッダと統計は `meta` と `stats` をそのまま使う。`meta.source` `meta.total_sessions` `stats.projects_worked_on` `stats.tool_frequency` を推測で置き換えない
-- 日報本文のプロジェクト節は `stats.projects_worked_on` の順で選ぶ。上位 3〜5 プロジェクトは必ず個別に触れ、残りだけを `その他` にまとめる
+- 日報本文のプロジェクト節は `stats.projects_worked_on` の順（`message_count` 降順）で選ぶ。上位 3〜5 プロジェクトは必ず個別に触れ、残りだけを `その他` にまとめる
+- Codex 由来のレポートは assistant/tool のメトリクスが疎になることがある。数値を捏造せず、疎であることを明示する
+- source の解決やデータ欠損について質問されたら `${CLAUDE_SKILL_DIR}/docs/data-sources.md` を Read する
 - `decisions` を一部だけ載せる場合は「全N件中M件を記載」と明記する
 - このレポート生成・修正そのものが小さな `nippo` プロジェクトとして混ざることがある。その場合でもヘッダの統計は維持しつつ、本文では「日報生成・修正」と明示して軽く扱う
 - 参考リンクの URL はそのまま貼らず、末尾の日本語や句読点を落として正しい URL だけを残す
@@ -50,17 +55,31 @@ context: fork
 | report | report | 7日 | `nippo collect --days 7 --stats-only` |
 | review | review | 90日 | `nippo collect --days 90 --stats-only` |
 | insight | insight | 7日 | `nippo collect --days 7` |
-| trend | trend | 90日 | 3回 `nippo collect --from X --to Y --format summary` |
+| trend | trend | 90日 | 期間を3等分し、区間ごとに `nippo collect --from X --to Y --format summary` を3回 |
+| plan | plan | なし（最新の日報） | 収集なし。`reports/` の既存ファイルを Read |
+| ledger | ledger | なし（`reports/nippo-*.md`） | `nippo ledger`（collect は実行しない） |
 | (数値のみ) | 日報 | その数値 | `nippo collect --days N` |
 
 `daily` は `(空)` と同じ日報モードのエイリアス。出力ファイル名は `reports/nippo-YYYY-MM-DD.md` を使う。
 
-残りトークンのうち `claude` / `codex` / `all` は `--source` に渡す。数値があれば `--days` を置換。それ以外の文字列は `--project` に渡す。
+残りトークンのうち `claude` / `codex` / `all` は `--source` に渡す。数値があれば `--days` を置換。それ以外の文字列は `--project` に渡す。先頭単語がモード名・数値・source のいずれでもない場合は日報モードとして扱い、その単語を `--project` に渡す。
 
 ## 収集と生成
 
-1. このリポジトリ内なら `cargo run -q -p nippo -- collect ...`、それ以外は `nippo collect ...` を Bash で実行（brief は出力を直接保存して完了）
-2. JSON を Read で読み込む
+`plan` モードは収集を行わない。Glob で cwd の `reports/nippo-*.md` を探し、
+ファイル名の日付が最新のものを Read する。`reports/ledger.yaml` が存在すればそれも
+Read し、最近も再出現している未収束の General Fix Rule を候補材料にする。
+`${CLAUDE_SKILL_DIR}/docs/templates/plan-template.md` と
+`${CLAUDE_SKILL_DIR}/docs/reflection-theory.md` を Read し、候補を 1〜3 個だけ提示する。
+選ぶ実験・理由・最初の一手の記入欄は空白のまま
+`reports/plan-YYYY-MM-DD.md` に保存し、パスを通知して完了。
+
+`ledger` モードは収集・テンプレートを使わない。このリポジトリ内なら `cargo run -q -p nippo -- ledger`、それ以外は `nippo ledger` を実行する。cwd の `reports/nippo-*.md` から `## Unclear points` セクションを横断パースして `reports/ledger.yaml` に累積し、CONVERGED / DIVERGENCE-SIGNAL / CONTINUE の判定を出力する。この判定はそのままユーザーに伝え、過剰に解釈しない。利用者が agent 設定向けの候補を求めた場合は `ledger --export` を実行する。複数回出現した General Fix Rule が `reports/ledger-export.md` に出力されるが、候補にすぎないため、CLAUDE.md / AGENTS.md へコピーする前に人間が取捨選択すると伝える。以上で完了。
+
+その他のモード:
+
+1. このリポジトリ内なら `cargo run -q -p nippo -- collect ...`、それ以外は `nippo collect ...` を Bash で実行し、JSON を `reports/.nippo-raw.json` にリダイレクトする（brief はリダイレクトせず出力を直接保存して完了）
+2. `reports/.nippo-raw.json` を Read で読み込む（大きい場合は分割して読む）
 3. モードに対応するテンプレートを Read で読み込む
 
 テンプレートは `${CLAUDE_SKILL_DIR}/docs/templates/` にある:
@@ -74,13 +93,15 @@ context: fork
 | review | `${CLAUDE_SKILL_DIR}/docs/templates/review-template.md` | 成果の定量化 + 成長 + 次期目標 |
 | insight | `${CLAUDE_SKILL_DIR}/docs/templates/insight-template.md` | ALACT モデルで回答付き |
 | trend | `${CLAUDE_SKILL_DIR}/docs/templates/trend-template.md` | 3期間の比較。最低45日 |
+| plan | `${CLAUDE_SKILL_DIR}/docs/templates/plan-template.md` | 候補のみ提示。選択と記入は利用者 |
 
-reflection / guide / insight は `${CLAUDE_SKILL_DIR}/docs/reflection-theory.md` も Read する。
+reflection / guide / insight / plan は `${CLAUDE_SKILL_DIR}/docs/reflection-theory.md` も Read する。
 reflection / guide は同日の `reports/nippo-YYYY-MM-DD.md` があれば Read する。
 
 4. テンプレートに従いレポートを Write で保存（日報モードは既存ファイルがあっても上書き）
 5. パスをユーザーに通知
+6. 日報（`Unclear points` セクションを含む）を生成した後は、`/nippo ledger` で詰まりを累積集計できることを一言案内する（自動では実行しない）
 
 ## 改善提案
 
-レポート生成中に Claude が自前で集計・加工していることに気づいたら、レポート出力後に `gh issue create --repo nwiizo/nippo` で Rust 側への移行を提案する（既存 Issue と重複確認、1回最大2件）。
+レポート生成中に Claude が自前で集計・加工していることに気づいたら、レポート出力後に Rust 側への移行を Issue として提案する。作成前に必ず Issue 本文を提示してユーザーの了承を得てから `gh issue create --repo nwiizo/nippo` を実行する（既存 Issue と重複確認、1回最大2件）。

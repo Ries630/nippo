@@ -1,15 +1,20 @@
 mod filter;
+mod ledger;
+#[cfg(feature = "tui")]
+mod ledger_tui;
 mod output;
 mod session;
+mod skill_install;
 mod sources;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::filter::{DateFilter, Period};
 use crate::output::{SourceMeta, build_output, format_summary};
 use crate::session::RawSession;
+use crate::skill_install::{SkillTarget, install as install_skill};
 use crate::sources::claude_code::{
     collect_sessions as collect_claude_sessions,
     discover_session_files as discover_claude_session_files,
@@ -39,6 +44,20 @@ enum DataSource {
     All,
 }
 
+#[derive(Subcommand)]
+enum SkillAction {
+    /// Install the nippo skill for Claude Code, Codex, or both
+    Install {
+        /// Skill host to install for
+        #[arg(long, value_enum, default_value = "all")]
+        target: SkillTarget,
+
+        /// Replace an existing file, directory, or unexpected symlink
+        #[arg(long)]
+        force: bool,
+    },
+}
+
 #[derive(Parser)]
 #[command(
     name = "nippo",
@@ -55,14 +74,19 @@ nippo スキルのデータ収集バックエンドとして動作する。
   nippo collect --project myapp           プロジェクトで絞り込み
   nippo collect --source codex            Codex 履歴のみ
 
+スキルをセットアップする:
+  nippo skill install                     Claude Code + Codex
+
 スキルと組み合わせて使う:
   /nippo              日報（事実 + 意思決定 + 用語レビュー）
   /nippo reflection   問いのみ（自分で振り返る）
+  /nippo plan         前日の振り返りから今日の実験候補を提示
   /nippo guide        回答 + 学ぶべき概念
   /nippo report       上司・メンター向け進捗報告
   /nippo review       評価面談・自己評価用
   /nippo insight      深い振り返り（ALACT モデル）
   /nippo trend 90     三分割変化分析
+  /nippo ledger       詰まりの累積集計と収束/発散判定
 
 https://github.com/nwiizo/nippo",
     after_help = "詳細: https://github.com/nwiizo/nippo"
@@ -119,6 +143,39 @@ enum Commands {
         /// Custom Codex data directory (default: ~/.codex)
         #[arg(long)]
         codex_dir: Option<PathBuf>,
+    },
+
+    /// Fold structured `## Unclear points` from past reports into a
+    /// cumulative `reports/ledger.yaml`, then emit a convergence /
+    /// divergence signal.
+    ///
+    /// Run this after generating one or more daily / reflection / insight
+    /// reports — each new report becomes one iteration in the streak.
+    ///
+    /// Pass `--tui` to open an interactive read-only dashboard instead of
+    /// printing the summary (requires a build with the `tui` feature).
+    Ledger {
+        /// Reports directory (default: ./reports)
+        #[arg(long, default_value = "reports")]
+        reports_dir: PathBuf,
+
+        /// Output ledger path (default: <reports_dir>/ledger.yaml)
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// Open an interactive read-only dashboard (requires the `tui` feature)
+        #[arg(long)]
+        tui: bool,
+
+        /// Export recurring General Fix Rules as agent-config candidates
+        #[arg(long)]
+        export: bool,
+    },
+
+    /// Manage Claude Code and Codex skills
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
     },
 }
 
@@ -213,8 +270,96 @@ fn run() -> Result<()> {
                 }
             }
         }
+        Commands::Ledger {
+            reports_dir,
+            out,
+            tui,
+            export,
+        } => {
+            run_ledger(&reports_dir, out.as_deref(), tui, export)?;
+        }
+        Commands::Skill {
+            action: SkillAction::Install { target, force },
+        } => {
+            let home_dir = resolve_home_dir()?;
+            let cwd = std::env::current_dir()?;
+            let report = install_skill(&home_dir, &cwd, target, force)?;
+            report.print();
+        }
     }
 
+    Ok(())
+}
+
+fn run_ledger(reports_dir: &Path, out: Option<&Path>, tui: bool, export: bool) -> Result<()> {
+    if !reports_dir.is_dir() {
+        anyhow::bail!(
+            "reports dir not found: {} (run from a nippo project root, or pass --reports-dir)",
+            reports_dir.display()
+        );
+    }
+    let default_out = reports_dir.join("ledger.yaml");
+    let out_path = out.unwrap_or(&default_out);
+    let outcome = ledger::rebuild_from_scratch(reports_dir, out_path)?;
+    if export {
+        let export_path = reports_dir.join("ledger-export.md");
+        ledger::write_export(&export_path, &outcome.ledger)?;
+        println!("export: {}", export_path.display());
+    }
+    if outcome.log.is_empty() {
+        println!("ledger: {}", out_path.display());
+        println!(
+            "(no reports with `## Unclear points` found under {})",
+            reports_dir.display()
+        );
+        return Ok(());
+    }
+    if tui {
+        #[cfg(feature = "tui")]
+        {
+            crate::ledger_tui::run(&outcome)?;
+            return Ok(());
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            anyhow::bail!(
+                "--tui requires a build with the `tui` feature: \
+                 cargo install --path crates/collector --features tui \
+                 (or cargo run -p nippo --features tui -- ledger --tui)"
+            );
+        }
+    }
+    println!("ledger: {}", out_path.display());
+    for line in &outcome.log {
+        println!("  {line}");
+    }
+    println!();
+    match outcome.signal {
+        ledger::Signal::Converged => {
+            println!(
+                "[CONVERGED] {} consecutive report(s) with zero new unclear rules — \
+                 this class of struggle has stopped surfacing.",
+                ledger::CONVERGE_STREAK
+            );
+        }
+        ledger::Signal::Diverged => {
+            println!(
+                "[DIVERGENCE-SIGNAL] {} consecutive report(s) with non-decreasing \
+                 new-rule count — patching individual symptoms is not working. \
+                 Consider a structural change to your workflow / environment / habit, \
+                 not another tactical fix.",
+                ledger::DIVERGE_STREAK
+            );
+        }
+        ledger::Signal::Continue => {
+            println!(
+                "[CONTINUE] {} report(s) folded, {} cumulative rule(s) known. \
+                 Run again after your next /nippo daily report.",
+                outcome.ledger.reports.len(),
+                outcome.ledger.known_rules.len(),
+            );
+        }
+    }
     Ok(())
 }
 
@@ -312,8 +457,19 @@ fn source_name(source: &DataSource) -> &'static str {
     }
 }
 
+/// Resolve the home used by collection defaults, falling back to `/` when
+/// `HOME` is unavailable so existing collect behavior remains permissive.
 fn dirs_home() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/"))
+}
+
+/// Resolve the required skill-install destination and reject a missing or
+/// empty `HOME` instead of writing into an unintended fallback directory.
+fn resolve_home_dir() -> Result<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("HOME is not set; cannot determine skill install directory"))
 }

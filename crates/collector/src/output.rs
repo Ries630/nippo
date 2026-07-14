@@ -96,6 +96,14 @@ pub struct AggregateStats {
     pub sessions_by_hour: HashMap<String, u32>,
     pub overall_time_range: DateRange,
     pub prompt_stats: PromptStats,
+    pub(crate) focus: FocusStats,
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct FocusStats {
+    pub(crate) context_switches: usize,
+    pub(crate) longest_focus_minutes: i64,
+    pub(crate) focus_blocks: usize,
 }
 
 #[derive(Serialize)]
@@ -293,6 +301,12 @@ pub fn format_summary(output: &CollectorOutput) -> String {
         s.total_input_tokens, s.total_output_tokens,
     )
     .ok();
+    writeln!(
+        buf,
+        "集中: {} ブロック | 最長: {} 分 | プロジェクト切替: {} 回",
+        s.focus.focus_blocks, s.focus.longest_focus_minutes, s.focus.context_switches,
+    )
+    .ok();
 
     if !s.projects_worked_on.is_empty() {
         writeln!(buf).ok();
@@ -342,6 +356,110 @@ fn format_source_line(source: &SourceMeta) -> String {
     };
 
     format!("requested {} | resolved {}", source.requested, resolved)
+}
+
+struct FocusInterval<'a> {
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    project: &'a str,
+    session_id: &'a str,
+}
+
+/// Aggregate uninterrupted work blocks independently from the broader stats
+/// fold. A gap of 30 minutes or more starts a new block, and a project switch
+/// is counted only between adjacent sessions that remain in the same block.
+pub(crate) fn compute_focus_stats(sessions: &[RawSession]) -> FocusStats {
+    let mut intervals: Vec<FocusInterval<'_>> = sessions
+        .iter()
+        .filter_map(|session| {
+            let (start, end) = parsed_session_range(session)?;
+            Some(FocusInterval {
+                start,
+                end,
+                project: &session.project,
+                session_id: &session.session_id,
+            })
+        })
+        .collect();
+    intervals.sort_by(|left, right| {
+        left.start
+            .cmp(&right.start)
+            .then_with(|| left.session_id.cmp(right.session_id))
+    });
+
+    let Some(first) = intervals.first() else {
+        return FocusStats::default();
+    };
+
+    let mut context_switches = 0usize;
+    let mut focus_blocks = 1usize;
+    let mut block_start = first.start;
+    let mut block_end = first.end;
+    let mut longest_focus_minutes = 0i64;
+    let mut previous_project = first.project;
+
+    for interval in intervals.iter().skip(1) {
+        let gap = interval.start - block_end;
+        if gap < chrono::Duration::minutes(30) {
+            if interval.project != previous_project {
+                context_switches += 1;
+            }
+            if interval.end > block_end {
+                block_end = interval.end;
+            }
+        } else {
+            longest_focus_minutes =
+                longest_focus_minutes.max((block_end - block_start).num_minutes());
+            focus_blocks += 1;
+            block_start = interval.start;
+            block_end = interval.end;
+        }
+        previous_project = interval.project;
+    }
+    longest_focus_minutes = longest_focus_minutes.max((block_end - block_start).num_minutes());
+
+    FocusStats {
+        context_switches,
+        longest_focus_minutes,
+        focus_blocks,
+    }
+}
+
+fn parsed_session_range(session: &RawSession) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    let timestamps = session
+        .user_entries
+        .iter()
+        .map(|entry| entry.timestamp.as_str())
+        .chain(
+            session
+                .assistant_entries
+                .iter()
+                .map(|entry| entry.timestamp.as_str()),
+        );
+    let mut range: Option<(DateTime<Utc>, DateTime<Utc>)> = None;
+
+    for timestamp in timestamps {
+        // A session with any unparseable timestamp is excluded from focus
+        // aggregation; mixing partial ranges would distort gaps and switches.
+        let parsed = DateTime::parse_from_rfc3339(timestamp)
+            .ok()?
+            .with_timezone(&Utc);
+        match range.as_mut() {
+            Some((start, end)) => {
+                if parsed < *start {
+                    *start = parsed;
+                } else if parsed > *end {
+                    *end = parsed;
+                }
+            }
+            None => {
+                let end = parsed.to_owned();
+                range = Some((parsed, end));
+            }
+        }
+    }
+
+    range
 }
 
 fn compute_stats(sessions: &[RawSession], decisions: &[DecisionPoint]) -> AggregateStats {
@@ -465,11 +583,8 @@ fn compute_stats(sessions: &[RawSession], decisions: &[DecisionPoint]) -> Aggreg
             .then_with(|| a.project.cmp(&b.project))
     });
 
-    let avg_length = if total_prompts > 0 {
-        total_prompt_chars / total_prompts
-    } else {
-        0
-    };
+    let avg_length = total_prompt_chars.checked_div(total_prompts).unwrap_or(0);
+    let focus = compute_focus_stats(sessions);
 
     AggregateStats {
         projects_worked_on,
@@ -488,6 +603,7 @@ fn compute_stats(sessions: &[RawSession], decisions: &[DecisionPoint]) -> Aggreg
             short_prompts,
             total_prompts,
         },
+        focus,
     }
 }
 
@@ -495,6 +611,95 @@ fn compute_stats(sessions: &[RawSession], decisions: &[DecisionPoint]) -> Aggreg
 mod tests {
     use super::*;
     use crate::session::{ParsedAssistantEntry, ParsedUserEntry, RawSession};
+
+    fn timed_session(project: &str, session_id: &str, start: &str, end: &str) -> RawSession {
+        RawSession {
+            session_id: session_id.to_string(),
+            project: project.to_string(),
+            project_path: format!("/tmp/{project}"),
+            git_branch: Some("main".to_string()),
+            user_entries: vec![ParsedUserEntry {
+                timestamp: start.to_string(),
+                text: "prompt".to_string(),
+            }],
+            assistant_entries: vec![ParsedAssistantEntry {
+                timestamp: end.to_string(),
+                message_count: 1,
+                tool_uses: Vec::new(),
+                input_tokens: 0,
+                output_tokens: 0,
+                file_paths: Vec::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn counts_project_switches_in_start_time_order() {
+        let sessions = vec![
+            timed_session("alpha", "a", "2026-04-01T09:00:00Z", "2026-04-01T09:10:00Z"),
+            timed_session("beta", "b", "2026-04-01T09:20:00Z", "2026-04-01T09:30:00Z"),
+            timed_session("beta", "c", "2026-04-01T09:40:00Z", "2026-04-01T09:50:00Z"),
+            timed_session("alpha", "d", "2026-04-01T10:00:00Z", "2026-04-01T10:10:00Z"),
+        ];
+
+        assert_eq!(compute_focus_stats(&sessions).context_switches, 2);
+    }
+
+    #[test]
+    fn does_not_count_project_switches_after_a_thirty_minute_gap() {
+        let sessions = vec![
+            timed_session("alpha", "a", "2026-04-01T09:00:00Z", "2026-04-01T09:10:00Z"),
+            timed_session("beta", "b", "2026-04-01T09:40:00Z", "2026-04-01T10:00:00Z"),
+        ];
+
+        assert_eq!(compute_focus_stats(&sessions).context_switches, 0);
+    }
+
+    #[test]
+    fn merges_blocks_when_the_gap_is_under_thirty_minutes() {
+        let sessions = vec![
+            timed_session("alpha", "a", "2026-04-01T09:00:00Z", "2026-04-01T09:10:00Z"),
+            timed_session("alpha", "b", "2026-04-01T09:39:00Z", "2026-04-01T10:00:00Z"),
+            timed_session("alpha", "c", "2026-04-01T11:00:00Z", "2026-04-01T11:20:00Z"),
+        ];
+
+        let focus = compute_focus_stats(&sessions);
+
+        assert_eq!(focus.focus_blocks, 2);
+        assert_eq!(focus.longest_focus_minutes, 60);
+    }
+
+    #[test]
+    fn starts_a_new_block_at_the_thirty_minute_boundary() {
+        let sessions = vec![
+            timed_session("alpha", "a", "2026-04-01T09:00:00Z", "2026-04-01T09:10:00Z"),
+            timed_session("alpha", "b", "2026-04-01T09:40:00Z", "2026-04-01T10:00:00Z"),
+        ];
+
+        let focus = compute_focus_stats(&sessions);
+
+        assert_eq!(focus.focus_blocks, 2);
+        assert_eq!(focus.longest_focus_minutes, 20);
+    }
+
+    #[test]
+    fn excludes_sessions_with_unparseable_timestamps() {
+        let sessions = vec![
+            timed_session(
+                "alpha",
+                "valid",
+                "2026-04-01T09:00:00Z",
+                "2026-04-01T09:20:00Z",
+            ),
+            timed_session("beta", "invalid", "not-a-timestamp", "2026-04-01T09:30:00Z"),
+        ];
+
+        let focus = compute_focus_stats(&sessions);
+
+        assert_eq!(focus.focus_blocks, 1);
+        assert_eq!(focus.context_switches, 0);
+        assert_eq!(focus.longest_focus_minutes, 20);
+    }
 
     #[test]
     fn deduplicates_decisions_by_timestamp_and_prompt() {
@@ -565,6 +770,7 @@ mod tests {
         let summary = format_summary(&output);
 
         assert!(summary.contains("ソース: requested auto | resolved codex"));
+        assert!(summary.contains("集中: 1 ブロック | 最長: 0 分 | プロジェクト切替: 0 回"));
         assert_eq!(output.meta.source.requested, "auto");
         assert_eq!(output.meta.source.resolved, vec!["codex".to_string()]);
     }

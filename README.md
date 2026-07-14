@@ -69,27 +69,26 @@ Claude Code では `/nippo`、Codex では `$nippo` で同じ日報生成フロ�
 ## インストール
 
 ```bash
-# 1. Rust バイナリ
 cargo install nippo
-
-# 2. リポジトリ取得
-git clone https://github.com/nwiizo/nippo && cd nippo
-
-# 3-a. Claude Code スキル（シンボリックリンク推奨）
-ln -s "$(pwd)/.claude/skills/nippo" ~/.claude/skills/nippo
-
-# 3-b. Codex スキルをグローバルに使う場合
-mkdir -p ~/.agents/skills
-ln -s "$(pwd)/.agents/skills/nippo" ~/.agents/skills/nippo
+nippo skill install
 ```
 
-Codex は repo 内の `.agents/skills/` も自動検出するので、このリポジトリ内で使うだけなら追加インストールなしでも使える。
-Codex 対応後は、skill が見えている環境なら `$nippo` でそのまま実行できる。
+これで Claude Code 用の `~/.claude/skills/nippo` と Codex 用の
+`~/.agents/skills/nippo` がセットアップされる。片方だけ入れる場合は
+`--target claude` または `--target codex` を指定する。既存のインストールを
+置き換える場合は `--force` を付ける。
 
-シンボリックリンクにすると `git pull` でスキルとテンプレートの更新が自動反映される。
-スキルディレクトリ内の `docs` シンボリックリンクにより、どのディレクトリから `/nippo` を実行してもテンプレートが正しく読み込まれる。
+通常はバイナリに埋め込まれたスキルとテンプレートを書き出す。nippo の
+リポジトリ内（またはその子ディレクトリ）で実行した場合はリポジトリを自動検出し、
+各スキルへのシンボリックリンクを作るため、checkout の更新がそのまま反映される。
 
-コピーする場合は `cp -r .claude/skills/nippo ~/.claude/skills/nippo`（テンプレート更新時は再コピーが必要）。
+**アップグレード時の注意**: 埋め込み書き出し方式でインストールした場合、
+`cargo install nippo` でバイナリを更新してもディスク上のスキルとテンプレートは
+自動更新されない。バイナリ更新後は `nippo skill install --force` を再実行して
+スキル定義を揃えること（シンボリックリンク方式なら不要）。
+
+Windows の git checkout ではクレート内の埋め込み用シンボリックリンクが
+通常ファイルになることがあるため、シンボリックリンクを有効にした環境で package を作成する。
 
 **要件**: [Claude Code](https://claude.com/claude-code) または Codex + Rust 1.85+
 
@@ -113,6 +112,12 @@ Claude Code では `/nippo ...`、Codex では `$nippo ...` を使う。引数�
 | ------------------- | ---------------------------- | -------------- |
 | `/nippo reflection` | 問いのみ（回答は自分で書く） | 1日            |
 
+### 次の行動につなげる
+
+| コマンド      | 何を出すか                                   | 入力                                |
+| ------------- | -------------------------------------------- | ----------------------------------- |
+| `/nippo plan` | 前日の振り返りから今日の実験候補を1〜3個提示 | 最新の日報 + 任意の `ledger.yaml`   |
+
 ### 学びを得る
 
 | コマンド       | 何を出すか                             | デフォルト期間 |
@@ -132,6 +137,32 @@ Claude Code では `/nippo ...`、Codex では `$nippo ...` を使う。引数�
 | ---------------- | ---------------------------- | ---------------- |
 | `/nippo insight` | 週・月単位の振り返り         | 7日              |
 | `/nippo trend`   | 長期の変化分析（三分割比較） | 90日（最低45日） |
+
+### 詰まりを累積で追う
+
+| コマンド        | 何を出すか                                  | 入力                  |
+| --------------- | ------------------------------------------- | --------------------- |
+| `/nippo ledger` | `## Unclear points` を横断集計して収束/発散判定 | `reports/nippo-*.md` (期間なし) |
+
+過去の日報の `## Unclear points` セクション
+（`Issue / Cause / General Fix Rule` の三項組）を時系列で読み込み、
+`reports/ledger.yaml` に正規化されたルール集合を累積する。各日について
+新規ルール数を観察し、2 日連続でゼロなら `[CONVERGED]`（この種の詰まりは
+学習済み）、3 日連続で非減少なら `[DIVERGENCE-SIGNAL]`（戦術的修正の限界、
+作業環境・道具・タスク選定そのものを変える合図）を表示する。
+詳細は [docs/reflection-theory.md](docs/reflection-theory.md) の「推論時
+Alignment / 自然言語による勾配降下」節を参照。
+
+`nippo ledger --tui` は、同じ集計結果を対話的な読み取り専用ダッシュボードで
+表示する（収束/発散を色分けしたバッジ、レポートごとの new/reseen、新規ルール数の
+スパークライン、再出現ルールの一覧）。`tui` フィーチャ付きのビルドが必要:
+`cargo install --path crates/collector --features tui`。`q` / `Esc` で終了、`j`/`k`
+でレポートを移動する。
+
+`nippo ledger --export` は通常の集計後、複数回出現した General Fix Rule を
+CLAUDE.md / AGENTS.md 追記候補として `reports/ledger-export.md` に出力する。
+各候補には出現回数と初出・最終出現日が付く。自動採用するルールではないため、
+設定へコピーする前に人間が取捨選択する。
 
 ### 期間指定・プロジェクト指定
 
@@ -256,6 +287,7 @@ nippo/
 | ------------------------ | ---------------------------------------------------- |
 | `nippo-template.md`      | 日報の項目（セクションの追加・削除）                 |
 | `reflection-template.md` | 問いの生成ルール・理論フレームワーク                 |
+| `plan-template.md`       | 前日の経験を今日の行動実験へつなぐ足場               |
 | `guide-template.md`      | フィードバックの視点（シニア・CTO 等の変更・追加）   |
 | `report-template.md`     | 進捗報告のフォーマット（社内テンプレートに合わせる） |
 | `review-template.md`     | 自己評価の構造                                       |

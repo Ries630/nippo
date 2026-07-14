@@ -8,6 +8,7 @@ Rust バイナリ（データ収集）+ Claude Code / Codex スキル（レポ�
 ```bash
 cargo fmt && cargo clippy -- -D warnings && cargo test   # 品質チェック
 cargo build --release -p nippo                            # ビルド
+cargo build --release -p nippo --features tui             # ledger TUI 付きビルド
 cargo install --path crates/collector                     # ローカルインストール
 ```
 
@@ -18,12 +19,13 @@ cargo install --path crates/collector                     # ローカルイン�
 
 ### Rust バイナリを変更するとき
 - `crates/collector/src/` 以下を編集
-- `main.rs`: CLI 引数・source 選択、`filter.rs`: 日付フィルタ、`output.rs`: JSON/summary 出力、`session.rs`: 共通セッション表現、`sources/claude_code.rs`: Claude JSONL パーサ、`sources/codex.rs`: Codex 履歴パーサ
+- `main.rs`: CLI 引数・source 選択、`filter.rs`: 日付フィルタ、`output.rs`: JSON/summary 出力、`session.rs`: 共通セッション表現、`ledger.rs`: Unclear points の累積台帳・収束/発散判定、`ledger_tui.rs`: ratatui ダッシュボード（`tui` feature、読み取り専用）、`sources/claude_code.rs`: Claude JSONL パーサ、`sources/codex.rs`: Codex 履歴パーサ
 - 変更後は `cargo fmt && cargo clippy -- -D warnings && cargo test` を実行
 
 ### スキルを変更するとき
 - `.claude/skills/nippo/SKILL.md`: コマンドルーティング・実行手順
 - `.agents/skills/nippo/SKILL.md`: Codex 用 skill
+- 共通ルール（禁止事項・モード定義・出力ルール）を変更したら両 SKILL.md に同期する。片方だけの変更はプラットフォーム固有の理由がある場合のみ
 - `docs/templates/`: 各モードのテンプレート
 - `docs/`: リフレクション理論・データソース仕様
 - テンプレートファイル名とモード名の対応:
@@ -34,14 +36,17 @@ cargo install --path crates/collector                     # ローカルイン�
   - `docs/templates/review-template.md` → `/nippo review`
   - `docs/templates/insight-template.md` → `/nippo insight`
   - `docs/templates/trend-template.md` → `/nippo trend`
+  - `docs/templates/plan-template.md` → `/nippo plan`
+  - `/nippo ledger` はテンプレートなし（Rust バイナリの `nippo ledger` が `reports/*.md` を直接処理）
   - `docs/reflection-theory.md` → 全リフレクション系モードが参照
   - `docs/data-sources.md` → JSONL データソース仕様
 
 ### 新しいモードを追加するとき
 1. `docs/templates/` にテンプレートファイルを作成
-2. `SKILL.md` の引数パースルール・コマンド一覧・ステップ2・出力ルール・参照リソースを更新
-3. `README.md` のコマンド一覧を更新
-4. この `CLAUDE.md` のテンプレート対応表を更新
+2. `crates/collector/src/skill_install.rs` の埋め込みテンプレート一覧に追加
+3. `SKILL.md` の引数パースルール・コマンド一覧・ステップ2・出力ルール・参照リソースを更新
+4. `README.md` のコマンド一覧を更新
+5. この `CLAUDE.md` のテンプレート対応表を更新
 
 ## 制約
 

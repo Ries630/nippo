@@ -1,6 +1,6 @@
 ---
 name: "nippo"
-description: "Generate Japanese daily reports, reflection prompts, guides, reviews, and trend reports from Claude Code or Codex work logs. Use when the user asks for nippo, 日報, daily, reflection, guide, report, review, insight, trend, or wants to summarize recent Claude Code/Codex work."
+description: "Generate Japanese daily reports, reflection prompts, guides, reviews, and trend reports from Claude Code or Codex work logs. Use when the user asks for nippo, 日報, daily, reflection, guide, report, review, insight, trend, plan, ledger, or wants to summarize recent Claude Code/Codex work."
 ---
 
 # Nippo
@@ -9,7 +9,7 @@ Use this skill when the user wants to turn recent Claude Code or Codex work into
 
 ## Inputs
 
-- mode: default, `daily`, `brief`, `reflection`, `guide`, `report`, `review`, `insight`, `trend`
+- mode: default, `daily`, `brief`, `reflection`, `guide`, `report`, `review`, `insight`, `trend`, `plan`, `ledger`
 - optional days
 - optional project filter
 - optional source override: `claude`, `codex`, `all`
@@ -30,7 +30,9 @@ Examples:
 4. Treat `daily` as an alias of the default daily report mode.
 5. Default to `--source auto`. Override when the user explicitly asks for `claude`, `codex`, or `all`.
 6. For `brief`, save the summary output directly and stop.
-7. For other modes, read the collected JSON and the matching template:
+7. For `ledger`, do NOT call `nippo collect`. Run `nippo ledger` (or `cargo run -q -p nippo -- ledger`) which scans `reports/nippo-*.md` (daily reports) for the `## Unclear points` section, folds them into `reports/ledger.yaml`, and prints a CONVERGED / DIVERGENCE-SIGNAL / CONTINUE verdict. Relay that verdict back to the user verbatim; do not over-interpret. If the user asks for agent-config candidates, run `nippo ledger --export`: it writes recurring General Fix Rules to `reports/ledger-export.md`. Tell the user these are candidates only — a human must curate them before copying anything into CLAUDE.md / AGENTS.md.
+8. For `plan`, do NOT call `nippo collect`. Find the newest `reports/nippo-*.md` by the date in its filename and read it. Also read `reports/ledger.yaml` if present and use unresolved recurring General Fix Rules as candidate material. Read [docs/templates/plan-template.md](docs/templates/plan-template.md) and [docs/reflection-theory.md](docs/reflection-theory.md), present only 1-3 experiment candidates, leave the choice / reason / first-step fields blank for the user, save to `reports/plan-YYYY-MM-DD.md`, and report the path.
+9. For other modes, read the collected JSON and the matching template:
    - [docs/templates/nippo-template.md](docs/templates/nippo-template.md)
    - [docs/templates/reflection-template.md](docs/templates/reflection-template.md)
    - [docs/templates/guide-template.md](docs/templates/guide-template.md)
@@ -38,10 +40,12 @@ Examples:
    - [docs/templates/review-template.md](docs/templates/review-template.md)
    - [docs/templates/insight-template.md](docs/templates/insight-template.md)
    - [docs/templates/trend-template.md](docs/templates/trend-template.md)
-8. For `reflection`, `guide`, and `insight`, also read [docs/reflection-theory.md](docs/reflection-theory.md).
-9. Save daily reports, including `daily`, to `reports/nippo-YYYY-MM-DD.md`. Other modes keep `reports/{mode}-YYYY-MM-DD.md`. Append `-Nd` when days > 1.
-10. In daily mode, treat the freshly collected JSON as the only source of truth. Do not read an existing `reports/nippo-YYYY-MM-DD.md` as input; overwrite it with the new report.
-11. Ground the daily report header and stats directly in `meta` and `stats`, and choose project sections from `stats.projects_worked_on` in order of `message_count`.
+   - [docs/templates/plan-template.md](docs/templates/plan-template.md)
+10. For `reflection`, `guide`, `insight`, and `plan`, also read [docs/reflection-theory.md](docs/reflection-theory.md).
+11. Save daily reports, including `daily`, to `reports/nippo-YYYY-MM-DD.md`. Other modes keep `reports/{mode}-YYYY-MM-DD.md`. Append `-Nd` when days > 1.
+12. In daily mode, treat the freshly collected JSON as the only source of truth. Do not read an existing `reports/nippo-YYYY-MM-DD.md` as input; overwrite it with the new report.
+13. Ground the daily report header and stats directly in `meta` and `stats`, and choose project sections from `stats.projects_worked_on` in order of `message_count`.
+14. After generating a daily report (which emits an `## Unclear points` section), suggest the user run `/nippo ledger` to fold today's stuck points into the cumulative streak signal — but do NOT run it automatically.
 
 ## Mode Defaults
 
@@ -54,6 +58,8 @@ Examples:
 - `review`: `--days 90 --stats-only`
 - `insight`: `--days 7`
 - `trend`: split the time window into 3 ranges and run 3 summary collections
+- `plan`: no collection. Reads the newest `reports/nippo-*.md` and `reports/ledger.yaml`, writes `reports/plan-YYYY-MM-DD.md`
+- `ledger`: no time window. Reads `reports/nippo-*.md`, writes `reports/ledger.yaml`, prints a streak verdict. `--export` writes recurring rules to `reports/ledger-export.md`
 
 ## Rules
 
@@ -61,12 +67,15 @@ Examples:
 - Do not use Python for data collection.
 - Use `stats` as-is. Do not recalculate counters in prose.
 - Write reports in Japanese.
+- Do not recommend books or URLs (hallucination risk). Give concept names and search keywords instead.
+- For `reflection` and `guide`, also read the same-day `reports/nippo-YYYY-MM-DD.md` if it exists.
+- If the first token is neither a mode name, a number, nor a source selector, treat it as a project filter and run the default daily mode with `--project`.
 - Date boundaries follow the machine's local timezone. `--days 1` and `daily` mean the current local calendar day.
 - Treat one token matching `claude`, `codex`, or `all` as the source selector and pass it through to `--source`.
 - `Codex` report data comes from `history.jsonl`, `state_5.sqlite`, and rollout data referenced by `rollout_path`. Treat `logs_2.sqlite` as diagnostics only.
 - Codex-derived reports may have sparse assistant/tool metrics. State that explicitly instead of inventing numbers.
 - For daily reports, copy `meta.source`, `meta.total_sessions`, `stats.projects_worked_on`, and `stats.tool_frequency` from the collected JSON instead of inferring them from an older report.
-- Cover the activity-heavy projects first. Use `stats.projects_worked_on` order and give the top 3-5 projects their own section before collapsing anything into `その他`.
+- Cover the activity-heavy projects first. Use `stats.projects_worked_on` order (= `message_count` descending) and give the top 3-5 projects their own section before collapsing anything into `その他`.
 - If you show only a subset of `decisions`, explicitly state `全N件中M件を記載`.
 - If the current report generation itself appears as a tiny `nippo` project, keep it in the header stats but label it explicitly as report generation/editing and keep the body treatment minimal.
 - Sanitize reference links before writing them. Do not copy malformed URL fragments with trailing Japanese text or punctuation.
