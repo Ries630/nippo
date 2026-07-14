@@ -35,6 +35,7 @@ cargo install --path crates/collector                     # ローカルイン�
   - `docs/templates/review-template.md` → `/nippo review`
   - `docs/templates/insight-template.md` → `/nippo insight`
   - `docs/templates/trend-template.md` → `/nippo trend`
+  - `docs/templates/plan-template.md` → `/nippo plan`
   - `/nippo ledger` はテンプレートなし（Rust バイナリの `nippo ledger` が `reports/*.md` を直接処理）
   - `docs/reflection-theory.md` → 全リフレクション系モードが参照
   - `docs/data-sources.md` → JSONL データソース仕様

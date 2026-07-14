@@ -4,10 +4,11 @@ description: >
   Claude Code / Codex のセッションログから日報・リフレクション・インサイトを生成する。
   /nippo と /nippo daily で日報、/nippo reflection で内省の問い、/nippo guide で学習支援、
   /nippo report で進捗報告、/nippo review で自己評価、/nippo insight で深い振り返り、
-  /nippo trend で長期変化分析、/nippo ledger で詰まりの累積集計と収束/発散判定を生成する。
+  /nippo trend で長期変化分析、/nippo plan で朝の行動実験、
+  /nippo ledger で詰まりの累積集計と収束/発散判定を生成する。
   Rust バイナリ (nippo) でデータを収集する。
 argument-hint: "[mode] [days] [project] [source]"
-allowed-tools: Read, Write, Bash(nippo *), Bash(cargo run *), Bash(mkdir *), Bash(gh issue *)
+allowed-tools: Read, Write, Glob, Bash(nippo *), Bash(cargo run *), Bash(mkdir *), Bash(gh issue *)
 context: fork
 ---
 
@@ -52,6 +53,7 @@ context: fork
 | review | review | 90日 | `nippo collect --days 90 --stats-only` |
 | insight | insight | 7日 | `nippo collect --days 7` |
 | trend | trend | 90日 | 3回 `nippo collect --from X --to Y --format summary` |
+| plan | plan | なし（最新の日報） | 収集なし。`reports/` の既存ファイルを Read |
 | ledger | ledger | なし（`reports/nippo-*.md`） | `nippo ledger`（collect は実行しない） |
 | (数値のみ) | 日報 | その数値 | `nippo collect --days N` |
 
@@ -61,7 +63,15 @@ context: fork
 
 ## 収集と生成
 
-`ledger` モードは収集・テンプレートを使わない。このリポジトリ内なら `cargo run -q -p nippo -- ledger`、それ以外は `nippo ledger` を実行する。cwd の `reports/nippo-*.md` から `## Unclear points` セクションを横断パースして `reports/ledger.yaml` に累積し、CONVERGED / DIVERGENCE-SIGNAL / CONTINUE の判定を出力する。この判定はそのままユーザーに伝え、過剰に解釈しない。以上で完了。
+`plan` モードは収集を行わない。Glob で cwd の `reports/nippo-*.md` を探し、
+ファイル名の日付が最新のものを Read する。`reports/ledger.yaml` が存在すればそれも
+Read し、最近も再出現している未収束の General Fix Rule を候補材料にする。
+`${CLAUDE_SKILL_DIR}/docs/templates/plan-template.md` と
+`${CLAUDE_SKILL_DIR}/docs/reflection-theory.md` を Read し、候補を 1〜3 個だけ提示する。
+選ぶ実験・理由・最初の一手の記入欄は空白のまま
+`reports/plan-YYYY-MM-DD.md` に保存し、パスを通知して完了。
+
+`ledger` モードは収集・テンプレートを使わない。このリポジトリ内なら `cargo run -q -p nippo -- ledger`、それ以外は `nippo ledger` を実行する。cwd の `reports/nippo-*.md` から `## Unclear points` セクションを横断パースして `reports/ledger.yaml` に累積し、CONVERGED / DIVERGENCE-SIGNAL / CONTINUE の判定を出力する。この判定はそのままユーザーに伝え、過剰に解釈しない。利用者が agent 設定向けの候補を求めた場合は `ledger --export` を実行する。複数回出現した General Fix Rule が `reports/ledger-export.md` に出力されるが、候補にすぎないため、CLAUDE.md / AGENTS.md へコピーする前に人間が取捨選択すると伝える。以上で完了。
 
 その他のモード:
 
@@ -80,8 +90,9 @@ context: fork
 | review | `${CLAUDE_SKILL_DIR}/docs/templates/review-template.md` | 成果の定量化 + 成長 + 次期目標 |
 | insight | `${CLAUDE_SKILL_DIR}/docs/templates/insight-template.md` | ALACT モデルで回答付き |
 | trend | `${CLAUDE_SKILL_DIR}/docs/templates/trend-template.md` | 3期間の比較。最低45日 |
+| plan | `${CLAUDE_SKILL_DIR}/docs/templates/plan-template.md` | 候補のみ提示。選択と記入は利用者 |
 
-reflection / guide / insight は `${CLAUDE_SKILL_DIR}/docs/reflection-theory.md` も Read する。
+reflection / guide / insight / plan は `${CLAUDE_SKILL_DIR}/docs/reflection-theory.md` も Read する。
 reflection / guide は同日の `reports/nippo-YYYY-MM-DD.md` があれば Read する。
 
 4. テンプレートに従いレポートを Write で保存（日報モードは既存ファイルがあっても上書き）
