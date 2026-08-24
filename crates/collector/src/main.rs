@@ -9,6 +9,7 @@ mod sources;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::filter::{DateFilter, Period, local_timezone_name};
@@ -505,21 +506,30 @@ fn source_name(source: &DataSource) -> &'static str {
     }
 }
 
-/// Resolve the home used by collection defaults, falling back to `/` when
-/// `HOME` is unavailable so existing collect behavior remains permissive.
+/// Resolve the home used by collection defaults. The `/` fallback preserves
+/// the existing permissive collection behavior when neither variable is usable.
 fn dirs_home() -> PathBuf {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/"))
+    home_dir_from_values(std::env::var_os("HOME"), std::env::var_os("USERPROFILE"))
+        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// Resolve the required skill-install destination and reject a missing or
-/// empty `HOME` instead of writing into an unintended fallback directory.
+/// Resolve the required skill-install destination and reject missing or empty
+/// home environment variables instead of writing into an unintended directory.
 fn resolve_home_dir() -> Result<PathBuf> {
-    std::env::var_os("HOME")
+    home_dir_from_values(std::env::var_os("HOME"), std::env::var_os("USERPROFILE")).ok_or_else(
+        || {
+            anyhow::anyhow!(
+                "HOME and USERPROFILE are unset or empty; cannot determine skill install directory"
+            )
+        },
+    )
+}
+
+fn home_dir_from_values(home: Option<OsString>, user_profile: Option<OsString>) -> Option<PathBuf> {
+    home.into_iter()
+        .chain(user_profile)
         .map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
-        .ok_or_else(|| anyhow::anyhow!("HOME is not set; cannot determine skill install directory"))
+        .find(|path| !path.as_os_str().is_empty())
 }
 
 #[cfg(test)]
@@ -550,6 +560,34 @@ mod tests {
 
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, "past-work");
+    }
+
+    #[test]
+    fn home_dir_uses_home_then_user_profile() {
+        let home = OsString::from("/home/nippo");
+        let user_profile = OsString::from(r"C:\Users\yuyas");
+
+        assert_eq!(
+            home_dir_from_values(Some(home.clone()), None),
+            Some(PathBuf::from("/home/nippo"))
+        );
+        assert_eq!(
+            home_dir_from_values(Some(home), Some(user_profile.clone())),
+            Some(PathBuf::from("/home/nippo"))
+        );
+        assert_eq!(
+            home_dir_from_values(None, Some(user_profile.clone())),
+            Some(PathBuf::from(r"C:\Users\yuyas"))
+        );
+        assert_eq!(
+            home_dir_from_values(Some(OsString::new()), Some(user_profile)),
+            Some(PathBuf::from(r"C:\Users\yuyas"))
+        );
+        assert_eq!(
+            home_dir_from_values(Some(OsString::new()), Some(OsString::new())),
+            None
+        );
+        assert_eq!(home_dir_from_values(None, None), None);
     }
 
     #[test]
