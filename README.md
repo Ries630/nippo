@@ -183,6 +183,65 @@ CLAUDE.md / AGENTS.md 追記候補として `reports/ledger-export.md` に出力
 
 ---
 
+## 定期実行
+
+NIPPO は端末内の Claude Code / Codex の作業履歴を読むため、ローカルファイルへ
+アクセスできる定期タスクを使う。クラウド上で動くタスクはローカル履歴を読めない。
+最初に対象プロジェクトで `/nippo daily` または `$nippo daily` を手動実行し、
+`reports/` に日報が作られることを確認しておく。
+
+### Codex（ChatGPT デスクトップアプリ）
+
+対象プロジェクトを開いた Codex のチャットで、たとえば次のように依頼する。
+
+```text
+毎日18:00に、このプロジェクトで $nippo daily codex を実行する定期タスクを作成してください。
+ローカルプロジェクトで実行し、worktree は使わないでください。
+```
+
+作成後はサイドバーの `Scheduled` から実行時刻と対象プロジェクトを確認し、最初の
+数回は結果を確認する。ローカル履歴を読むには、実行時にコンピューターが起動していて、
+ChatGPT デスクトップアプリが動いている必要がある。Codex CLI と IDE 拡張には定期タスクの
+管理画面がないため、作成と管理はデスクトップアプリで行う。
+
+詳しくは [OpenAI の Scheduled tasks ドキュメント](https://learn.chatgpt.com/docs/automations) を参照。
+
+### Claude Code Desktop
+
+`Code` タブの `Routines` から `New routine` → `Local` を選び、次のように設定する。
+
+- `Instructions`: `/nippo daily claude`
+- `Folder`: 日報の `reports/` を作りたいプロジェクト
+- `Schedule`: `Daily` と任意の時刻
+- `Worktree`: オフ
+
+作成後に `Run now` で一度実行し、必要な権限と出力先を確認する。ローカル定期タスクは
+Claude Code Desktop が起動し、コンピューターがスリープしていない間に動く。
+`Routines` が表示されない場合は Desktop アプリを更新する。
+
+詳しくは [Claude Code Desktop の定期タスク](https://code.claude.com/docs/en/desktop-scheduled-tasks) を参照。
+
+CLI セッションを開いたまま一時的に繰り返すだけなら、`/loop` も使える。
+
+```text
+/loop 1d /nippo daily claude
+```
+
+`/loop` は現在のセッション内でのみ動き、固定間隔のタスクは最長 7 日で終了する。
+常設の日報生成には Desktop のローカル定期タスクを使う。詳細は
+[Claude Code の `/loop` ドキュメント](https://code.claude.com/docs/en/scheduled-tasks) を参照。
+
+### 定期実行時の注意
+
+- `reports/` は定期タスクの作業フォルダに作られる。Git worktree を使うと日報もその
+  worktree 内に出力されるため、普段使うフォルダへ残したい場合は worktree を無効にする。
+- Claude Code と Codex の両方を使う場合は、どちらか一方で `/nippo daily all` または
+  `$nippo daily all` を定期実行する。同じ日付の日報を両方から作ると、後の実行結果で上書きされる。
+- 定期タスクの指示やスキル展開だけで終わるセッションは、既定のプロンプトノイズ除外の
+  対象になる。日報生成時は `--include-prompt-noise` や `--include-self` を付けない。
+
+---
+
 ## Rust CLI（単体でも使える）
 
 スキルを介さずに、Rust バイナリを直接実行してデータを確認できる。
