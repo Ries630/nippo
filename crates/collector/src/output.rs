@@ -3,7 +3,10 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
-use crate::session::{RawSession, assistant_message_count, summarize_session};
+use crate::session::{
+    RawSession, assistant_message_count, is_meaningful_prompt, sort_sessions_by_recency,
+    summarize_session,
+};
 
 /// UTC タイムスタンプからローカル時間の時（HH）を抽出する
 fn extract_local_hour(timestamp: &str) -> Option<String> {
@@ -24,15 +27,24 @@ pub struct CollectorOutput {
     pub sessions: Vec<SessionSummary>,
     pub decisions: Vec<DecisionPoint>,
     pub stats: AggregateStats,
+    pub render_helpers: RenderHelpers,
 }
 
 #[derive(Serialize)]
 pub struct OutputMeta {
     pub generated_at: String,
     pub filter_label: String,
+    pub period: OutputPeriod,
     pub source: SourceMeta,
     pub total_sessions: usize,
     pub total_files_scanned: usize,
+}
+
+#[derive(Serialize)]
+pub struct OutputPeriod {
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub timezone: String,
 }
 
 #[derive(Serialize)]
@@ -99,7 +111,7 @@ pub struct AggregateStats {
     pub(crate) focus: FocusStats,
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub(crate) struct FocusStats {
     pub(crate) context_switches: usize,
     pub(crate) longest_focus_minutes: i64,
@@ -127,6 +139,34 @@ pub struct PromptStats {
 pub struct DecisionsByProject {
     pub project: String,
     pub count: usize,
+}
+
+#[derive(Serialize)]
+pub struct RenderHelpers {
+    pub sessions_local: Vec<LocalSession>,
+    pub main_work_window_local: Option<MainWorkWindowLocal>,
+    pub tool_frequency_top5: Vec<ToolFrequencyItem>,
+}
+
+#[derive(Serialize)]
+pub struct LocalSession {
+    pub session_id: String,
+    pub project: String,
+    pub start_local: Option<String>,
+    pub end_local: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct MainWorkWindowLocal {
+    pub start: String,
+    pub end: String,
+    pub method: &'static str,
+}
+
+#[derive(Serialize)]
+pub struct ToolFrequencyItem {
+    pub name: String,
+    pub count: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +210,9 @@ fn extract_decisions(sessions: &[RawSession]) -> Vec<DecisionPoint> {
 
     for session in sessions {
         for entry in &session.user_entries {
+            if !is_meaningful_prompt(&entry.text) {
+                continue;
+            }
             let text_lower = entry.text.to_lowercase();
 
             let is_decision = DECISION_SIGNALS_JA.iter().any(|s| entry.text.contains(s))
@@ -204,20 +247,17 @@ fn extract_decisions(sessions: &[RawSession]) -> Vec<DecisionPoint> {
 pub fn build_output(
     mut sessions: Vec<RawSession>,
     filter_label: &str,
+    period: OutputPeriod,
     total_files_scanned: usize,
     stats_only: bool,
     source: SourceMeta,
 ) -> CollectorOutput {
-    sessions.sort_by(|a, b| {
-        let left = latest_timestamp(a);
-        let right = latest_timestamp(b);
-        right
-            .cmp(left)
-            .then_with(|| a.session_id.cmp(&b.session_id))
-    });
+    sort_sessions_by_recency(&mut sessions);
 
     let decisions = extract_decisions(&sessions);
-    let stats = compute_stats(&sessions, &decisions);
+    let focus = compute_focus(&sessions);
+    let stats = compute_stats(&sessions, &decisions, focus.stats);
+    let render_helpers = build_render_helpers(&sessions, &stats, &focus, stats_only);
 
     let session_summaries = if stats_only {
         Vec::new()
@@ -229,6 +269,7 @@ pub fn build_output(
         meta: OutputMeta {
             generated_at: chrono::Utc::now().to_rfc3339(),
             filter_label: filter_label.to_string(),
+            period,
             source,
             total_sessions: sessions.len(),
             total_files_scanned,
@@ -236,22 +277,66 @@ pub fn build_output(
         sessions: session_summaries,
         decisions,
         stats,
+        render_helpers,
     }
 }
 
-fn latest_timestamp(session: &RawSession) -> &str {
-    let user = session
-        .user_entries
-        .last()
-        .map(|entry| entry.timestamp.as_str())
-        .unwrap_or_default();
-    let assistant = session
-        .assistant_entries
-        .last()
-        .map(|entry| entry.timestamp.as_str())
-        .unwrap_or_default();
+fn build_render_helpers(
+    sessions: &[RawSession],
+    stats: &AggregateStats,
+    focus: &FocusCalculation,
+    stats_only: bool,
+) -> RenderHelpers {
+    let sessions_local = if stats_only {
+        Vec::new()
+    } else {
+        sessions
+            .iter()
+            .map(|session| {
+                let range = parsed_session_range(session);
+                LocalSession {
+                    session_id: session.session_id.clone(),
+                    project: session.project.clone(),
+                    start_local: range.as_ref().map(|(start, _)| format_local_time(start)),
+                    end_local: range.as_ref().map(|(_, end)| format_local_time(end)),
+                }
+            })
+            .collect()
+    };
 
-    if assistant > user { assistant } else { user }
+    let main_work_window_local =
+        focus
+            .main_work_window
+            .as_ref()
+            .map(|(start, end)| MainWorkWindowLocal {
+                start: format_local_time(start),
+                end: format_local_time(end),
+                method: "longest_block_with_gaps_under_30_minutes",
+            });
+
+    let mut tools: Vec<_> = stats.tool_frequency.iter().collect();
+    tools.sort_by(|left, right| right.1.cmp(left.1).then_with(|| left.0.cmp(right.0)));
+    let tool_frequency_top5 = tools
+        .into_iter()
+        .take(5)
+        .map(|(name, count)| ToolFrequencyItem {
+            name: name.clone(),
+            count: *count,
+        })
+        .collect();
+
+    RenderHelpers {
+        sessions_local,
+        main_work_window_local,
+        tool_frequency_top5,
+    }
+}
+
+fn format_local_time(timestamp: &DateTime<Utc>) -> String {
+    timestamp
+        .with_timezone(&Local)
+        .format("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string()
 }
 
 /// 人間が読みやすいサマリーテキストを生成する
@@ -365,10 +450,15 @@ struct FocusInterval<'a> {
     session_id: &'a str,
 }
 
+struct FocusCalculation {
+    stats: FocusStats,
+    main_work_window: Option<(DateTime<Utc>, DateTime<Utc>)>,
+}
+
 /// Aggregate uninterrupted work blocks independently from the broader stats
 /// fold. A gap of 30 minutes or more starts a new block, and a project switch
 /// is counted only between adjacent sessions that remain in the same block.
-pub(crate) fn compute_focus_stats(sessions: &[RawSession]) -> FocusStats {
+fn compute_focus(sessions: &[RawSession]) -> FocusCalculation {
     let mut intervals: Vec<FocusInterval<'_>> = sessions
         .iter()
         .filter_map(|session| {
@@ -388,14 +478,17 @@ pub(crate) fn compute_focus_stats(sessions: &[RawSession]) -> FocusStats {
     });
 
     let Some(first) = intervals.first() else {
-        return FocusStats::default();
+        return FocusCalculation {
+            stats: FocusStats::default(),
+            main_work_window: None,
+        };
     };
 
     let mut context_switches = 0usize;
     let mut focus_blocks = 1usize;
     let mut block_start = first.start;
     let mut block_end = first.end;
-    let mut longest_focus_minutes = 0i64;
+    let mut longest_window = (block_start, block_end);
     let mut previous_project = first.project;
 
     for interval in intervals.iter().skip(1) {
@@ -408,20 +501,26 @@ pub(crate) fn compute_focus_stats(sessions: &[RawSession]) -> FocusStats {
                 block_end = interval.end;
             }
         } else {
-            longest_focus_minutes =
-                longest_focus_minutes.max((block_end - block_start).num_minutes());
+            if block_end - block_start > longest_window.1 - longest_window.0 {
+                longest_window = (block_start, block_end);
+            }
             focus_blocks += 1;
             block_start = interval.start;
             block_end = interval.end;
         }
         previous_project = interval.project;
     }
-    longest_focus_minutes = longest_focus_minutes.max((block_end - block_start).num_minutes());
+    if block_end - block_start > longest_window.1 - longest_window.0 {
+        longest_window = (block_start, block_end);
+    }
 
-    FocusStats {
-        context_switches,
-        longest_focus_minutes,
-        focus_blocks,
+    FocusCalculation {
+        stats: FocusStats {
+            context_switches,
+            longest_focus_minutes: (longest_window.1 - longest_window.0).num_minutes(),
+            focus_blocks,
+        },
+        main_work_window: Some(longest_window),
     }
 }
 
@@ -462,7 +561,11 @@ fn parsed_session_range(session: &RawSession) -> Option<(DateTime<Utc>, DateTime
     range
 }
 
-fn compute_stats(sessions: &[RawSession], decisions: &[DecisionPoint]) -> AggregateStats {
+fn compute_stats(
+    sessions: &[RawSession],
+    decisions: &[DecisionPoint],
+    focus: FocusStats,
+) -> AggregateStats {
     let mut total_user = 0usize;
     let mut total_assistant = 0usize;
     let mut total_tool_uses = 0usize;
@@ -584,8 +687,6 @@ fn compute_stats(sessions: &[RawSession], decisions: &[DecisionPoint]) -> Aggreg
     });
 
     let avg_length = total_prompt_chars.checked_div(total_prompts).unwrap_or(0);
-    let focus = compute_focus_stats(sessions);
-
     AggregateStats {
         projects_worked_on,
         total_user_messages: total_user,
@@ -642,7 +743,7 @@ mod tests {
             timed_session("alpha", "d", "2026-04-01T10:00:00Z", "2026-04-01T10:10:00Z"),
         ];
 
-        assert_eq!(compute_focus_stats(&sessions).context_switches, 2);
+        assert_eq!(compute_focus(&sessions).stats.context_switches, 2);
     }
 
     #[test]
@@ -652,7 +753,7 @@ mod tests {
             timed_session("beta", "b", "2026-04-01T09:40:00Z", "2026-04-01T10:00:00Z"),
         ];
 
-        assert_eq!(compute_focus_stats(&sessions).context_switches, 0);
+        assert_eq!(compute_focus(&sessions).stats.context_switches, 0);
     }
 
     #[test]
@@ -663,7 +764,7 @@ mod tests {
             timed_session("alpha", "c", "2026-04-01T11:00:00Z", "2026-04-01T11:20:00Z"),
         ];
 
-        let focus = compute_focus_stats(&sessions);
+        let focus = compute_focus(&sessions).stats;
 
         assert_eq!(focus.focus_blocks, 2);
         assert_eq!(focus.longest_focus_minutes, 60);
@@ -676,7 +777,7 @@ mod tests {
             timed_session("alpha", "b", "2026-04-01T09:40:00Z", "2026-04-01T10:00:00Z"),
         ];
 
-        let focus = compute_focus_stats(&sessions);
+        let focus = compute_focus(&sessions).stats;
 
         assert_eq!(focus.focus_blocks, 2);
         assert_eq!(focus.longest_focus_minutes, 20);
@@ -694,7 +795,7 @@ mod tests {
             timed_session("beta", "invalid", "not-a-timestamp", "2026-04-01T09:30:00Z"),
         ];
 
-        let focus = compute_focus_stats(&sessions);
+        let focus = compute_focus(&sessions).stats;
 
         assert_eq!(focus.focus_blocks, 1);
         assert_eq!(focus.context_switches, 0);
@@ -731,6 +832,11 @@ mod tests {
         let output = build_output(
             sessions,
             "today",
+            OutputPeriod {
+                from: Some("2026-04-01".to_string()),
+                to: Some("2026-04-01".to_string()),
+                timezone: "Asia/Tokyo".to_string(),
+            },
             2,
             false,
             SourceMeta {
@@ -760,6 +866,11 @@ mod tests {
         let output = build_output(
             sessions,
             "today",
+            OutputPeriod {
+                from: Some("2026-04-01".to_string()),
+                to: Some("2026-04-01".to_string()),
+                timezone: "Asia/Tokyo".to_string(),
+            },
             1,
             false,
             SourceMeta {
@@ -773,5 +884,102 @@ mod tests {
         assert!(summary.contains("集中: 1 ブロック | 最長: 0 分 | プロジェクト切替: 0 回"));
         assert_eq!(output.meta.source.requested, "auto");
         assert_eq!(output.meta.source.resolved, vec!["codex".to_string()]);
+    }
+
+    #[test]
+    fn excludes_skill_preambles_from_decisions() {
+        let sessions = vec![RawSession {
+            session_id: "session-a".to_string(),
+            project: "nippo".to_string(),
+            project_path: "/tmp/nippo".to_string(),
+            git_branch: Some("main".to_string()),
+            user_entries: vec![
+                ParsedUserEntry {
+                    timestamp: "2026-08-13T10:00:00Z".to_string(),
+                    text: "Base directory for this skill: /tmp/instead-of-this".to_string(),
+                },
+                ParsedUserEntry {
+                    timestamp: "2026-08-13T10:01:00Z".to_string(),
+                    text: "(Re-invocation of /switch-to-example)".to_string(),
+                },
+                ParsedUserEntry {
+                    timestamp: "2026-08-13T10:02:00Z".to_string(),
+                    text: "Python ではなく Rust にする".to_string(),
+                },
+            ],
+            assistant_entries: Vec::new(),
+        }];
+
+        let output = build_output(
+            sessions,
+            "today",
+            OutputPeriod {
+                from: Some("2026-08-13".to_string()),
+                to: Some("2026-08-13".to_string()),
+                timezone: "Asia/Tokyo".to_string(),
+            },
+            1,
+            false,
+            SourceMeta {
+                requested: "claude".to_string(),
+                resolved: vec!["claude".to_string()],
+            },
+        );
+
+        assert_eq!(output.decisions.len(), 1);
+        assert_eq!(
+            output.decisions[0].user_prompt,
+            "Python ではなく Rust にする"
+        );
+    }
+
+    #[test]
+    fn builds_deterministic_render_helpers() {
+        let sessions = vec![
+            timed_session("alpha", "a", "2026-05-05T03:17:00Z", "2026-05-05T03:55:00Z"),
+            timed_session("alpha", "b", "2026-05-05T04:00:00Z", "2026-05-05T04:17:00Z"),
+        ];
+        let mut sessions = sessions;
+        sessions[0].assistant_entries[0].tool_uses = vec!["Read".to_string(), "Edit".to_string()];
+        sessions[1].assistant_entries[0].tool_uses = vec!["Edit".to_string()];
+
+        let output = build_output(
+            sessions,
+            "today",
+            OutputPeriod {
+                from: Some("2026-05-05".to_string()),
+                to: Some("2026-05-05".to_string()),
+                timezone: "Asia/Tokyo".to_string(),
+            },
+            2,
+            false,
+            SourceMeta {
+                requested: "claude".to_string(),
+                resolved: vec!["claude".to_string()],
+            },
+        );
+        let value = serde_json::to_value(&output).expect("serialize output");
+        assert_eq!(value["meta"]["period"]["from"], "2026-05-05");
+        assert_eq!(value["meta"]["period"]["to"], "2026-05-05");
+        assert_eq!(value["meta"]["period"]["timezone"], "Asia/Tokyo");
+        let helpers = &value["render_helpers"];
+
+        assert_eq!(helpers["sessions_local"].as_array().map(Vec::len), Some(2));
+        assert_eq!(helpers["tool_frequency_top5"][0]["name"], "Edit");
+        assert_eq!(helpers["tool_frequency_top5"][0]["count"], 2);
+        assert_eq!(
+            helpers["main_work_window_local"]["method"],
+            "longest_block_with_gaps_under_30_minutes"
+        );
+
+        let start = helpers["main_work_window_local"]["start"]
+            .as_str()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .expect("local start");
+        let end = helpers["main_work_window_local"]["end"]
+            .as_str()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .expect("local end");
+        assert_eq!((end - start).num_minutes(), 60);
     }
 }

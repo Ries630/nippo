@@ -135,6 +135,9 @@ nippo collect [OPTIONS]
 | `--period PERIOD` | 名前付き期間（`--days` より優先） | なし |
 | `--project NAME` | プロジェクト名でフィルタ（部分一致） | なし |
 | `--stats-only` | セッション詳細を省略し統計のみ出力 | `false` |
+| `--include-prompt-noise` | 定型通知・画像プレースホルダ・短い肯定応答なども含める | `false` |
+| `--include-self` | コマンドを実行している Claude Code / Codex セッションも含める | `false` |
+| `--max-sessions N` | 出力するセッション数の上限（0 = 無制限） | `0` |
 | `--format json\|summary` | 出力形式 | `json` |
 | `--source auto\|claude\|codex\|all` | データソース選択 | `auto` |
 | `--claude-dir PATH` | Claude データディレクトリ | `~/.claude` |
@@ -145,6 +148,30 @@ nippo collect [OPTIONS]
 優先順位: `--period` > `--from`/`--to` > `--days`
 
 日付境界は実行環境のローカルタイムゾーン基準。`--days 1` は「今日」、`--days 7` は「今日を含む過去7日」を意味する。
+
+JSON の `meta.period.from` と `meta.period.to` は指定した日付範囲の両端を含む。
+`meta.period.timezone` は境界の基準になった IANA タイムゾーン名を返し、OS から名前を
+取得できない場合は UTC オフセットを返す。`--days 0` では両端が `null` になる。
+`--from` だけを指定した場合の終了日は今日、`--to` だけを指定した場合の開始日は `null` になる。
+プロジェクト総数は `stats.projects_worked_on` の要素数から求める。
+
+既定では、スラッシュコマンド展開、ハーネス通知、画像プレースホルダ、中断通知、
+compact の導入文、短い肯定応答を user エントリから除外する。対応する assistant エントリは
+同じ ID の通常プロンプトと統合されている場合だけ、ツール使用や変更ファイルの集計に残る。
+統合後に意味のある user prompt がないセッションは、定期実行やコマンド展開だけの記録として
+セッション全体を除外する。除外前の記録が必要な場合は `--include-prompt-noise` を指定する。
+
+収集後は同じ `session_id` の記録を 1 件に統合する。`time_range` は最初から最後まで、
+プロンプトは timestamp と本文の組み合わせで重複除去する。assistant エントリは全項目が
+一致する重複を除外してから、メッセージ・ツール使用・トークンを合算する。
+`--max-sessions` は統合後のセッションを最新順に並べてから適用する。
+
+`CLAUDE_CODE_SESSION_ID` または `CODEX_THREAD_ID` が設定されている場合、その値と
+完全一致するセッションは既定で除外する。時刻やメッセージ数を使った推測では除外しない。
+
+JSON の `render_helpers` はローカル時刻のセッション範囲、30 分未満の間隔でつながる
+最長作業ブロック、使用回数上位 5 ツールを返す。元データから毎回算出する表示補助で、
+`sessions` と `stats` の既存項目は維持する。
 
 `--source auto` の判定:
 

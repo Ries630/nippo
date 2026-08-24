@@ -57,13 +57,16 @@ impl DateFilter {
             })
             .transpose()?;
 
-        let to = to
+        let mut to = to
             .map(|s| {
                 NaiveDate::parse_from_str(s, "%Y-%m-%d")
                     .map(local_date_end)
                     .map_err(|e| anyhow::anyhow!("Invalid --to date '{}': {}", s, e))
             })
             .transpose()?;
+        if from.is_some() && to.is_none() {
+            to = Some(local_date_end(Local::now().date_naive()));
+        }
 
         Ok(Self { from, to })
     }
@@ -157,6 +160,17 @@ impl DateFilter {
         self.from.map(SystemTime::from)
     }
 
+    pub fn local_date_bounds(&self) -> (Option<String>, Option<String>) {
+        let local_date = |datetime: DateTime<Utc>| {
+            datetime
+                .with_timezone(&Local)
+                .date_naive()
+                .format("%Y-%m-%d")
+                .to_string()
+        };
+        (self.from.map(local_date), self.to.map(local_date))
+    }
+
     fn matches_datetime(&self, dt: DateTime<Utc>) -> bool {
         if let Some(ref from) = self.from
             && dt < *from
@@ -170,6 +184,10 @@ impl DateFilter {
         }
         true
     }
+}
+
+pub fn local_timezone_name() -> String {
+    iana_time_zone::get_timezone().unwrap_or_else(|_| Local::now().offset().to_string())
 }
 
 fn parse_timestamp(timestamp: &str) -> Option<DateTime<Utc>> {
@@ -273,6 +291,13 @@ mod tests {
     fn test_range_filter() {
         let filter =
             DateFilter::from_range(Some("2026-03-15"), Some("2026-03-17")).expect("valid range");
+        assert_eq!(
+            filter.local_date_bounds(),
+            (
+                Some("2026-03-15".to_string()),
+                Some("2026-03-17".to_string())
+            )
+        );
         assert!(filter.matches(&local_timestamp(
             NaiveDate::from_ymd_opt(2026, 3, 15).expect("valid date"),
             10,
@@ -306,8 +331,25 @@ mod tests {
     }
 
     #[test]
+    fn named_today_exposes_the_same_inclusive_local_date() {
+        let today = Local::now().date_naive().to_string();
+        let filter = DateFilter::from_period(&Period::Today);
+
+        assert_eq!(
+            filter.local_date_bounds(),
+            (Some(today.clone()), Some(today))
+        );
+        assert!(!local_timezone_name().is_empty());
+    }
+
+    #[test]
     fn test_from_only() {
         let filter = DateFilter::from_range(Some("2026-03-15"), None).expect("valid");
+        let today = Local::now().date_naive().to_string();
+        assert_eq!(
+            filter.local_date_bounds(),
+            (Some("2026-03-15".to_string()), Some(today))
+        );
         assert!(!filter.matches(&local_timestamp(
             NaiveDate::from_ymd_opt(2026, 3, 14).expect("valid date"),
             23,
@@ -320,7 +362,7 @@ mod tests {
             0,
             0
         )));
-        assert!(filter.matches(&local_timestamp(
+        assert!(!filter.matches(&local_timestamp(
             NaiveDate::from_ymd_opt(2099, 1, 1).expect("valid date"),
             0,
             0,

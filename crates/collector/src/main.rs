@@ -11,9 +11,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
 
-use crate::filter::{DateFilter, Period};
-use crate::output::{SourceMeta, build_output, format_summary};
-use crate::session::RawSession;
+use crate::filter::{DateFilter, Period, local_timezone_name};
+use crate::output::{OutputPeriod, SourceMeta, build_output, format_summary};
+use crate::session::{
+    RawSession, merge_sessions_by_id, retain_meaningful_prompts, sort_sessions_by_recency,
+};
 use crate::skill_install::{SkillTarget, install as install_skill};
 use crate::sources::claude_code::{
     collect_sessions as collect_claude_sessions,
@@ -73,6 +75,8 @@ nippo スキルのデータ収集バックエンドとして動作する。
   nippo collect --period last-week        先週のデータ
   nippo collect --project myapp           プロジェクトで絞り込み
   nippo collect --source codex            Codex 履歴のみ
+  nippo collect --include-prompt-noise --include-self
+                                          除外前の記録を確認
 
 スキルをセットアップする:
   nippo skill install                     Claude Code + Codex
@@ -123,6 +127,14 @@ enum Commands {
         /// Output only aggregate statistics
         #[arg(long)]
         stats_only: bool,
+
+        /// Include deterministic command, harness, image, interrupt, and acknowledgement noise
+        #[arg(long)]
+        include_prompt_noise: bool,
+
+        /// Include the Claude Code or Codex session running this command
+        #[arg(long)]
+        include_self: bool,
 
         /// Maximum number of sessions to include in output (0 = unlimited)
         #[arg(long, default_value = "0")]
@@ -197,6 +209,8 @@ fn run() -> Result<()> {
             period,
             project,
             stats_only,
+            include_prompt_noise,
+            include_self,
             max_sessions,
             format,
             source,
@@ -220,6 +234,15 @@ fn run() -> Result<()> {
             let (mut sessions, total_files) =
                 collect_from_sources(&selected_sources, &claude_dir, &codex_dir, &filter)?;
 
+            if !include_self {
+                retain_non_current_sessions(&mut sessions, &current_host_session_ids());
+            }
+            sessions = merge_sessions_by_id(sessions);
+
+            if !include_prompt_noise {
+                retain_meaningful_prompts(&mut sessions);
+            }
+
             if let Some(ref proj) = project {
                 let proj_lower = proj.to_lowercase();
                 sessions.retain(|s| s.project.to_lowercase().contains(&proj_lower));
@@ -242,12 +265,21 @@ fn run() -> Result<()> {
             };
 
             if max_sessions > 0 {
+                sort_sessions_by_recency(&mut sessions);
                 sessions.truncate(max_sessions);
             }
 
             let output = build_output(
                 sessions,
                 &label,
+                {
+                    let (from, to) = filter.local_date_bounds();
+                    OutputPeriod {
+                        from,
+                        to,
+                        timezone: local_timezone_name(),
+                    }
+                },
                 total_files,
                 stats_only,
                 SourceMeta {
@@ -427,6 +459,22 @@ fn collect_from_sources(
     Ok((sessions, total_files))
 }
 
+fn retain_non_current_sessions(sessions: &mut Vec<RawSession>, current_ids: &[String]) {
+    sessions.retain(|session| {
+        !current_ids
+            .iter()
+            .any(|current_id| current_id == &session.session_id)
+    });
+}
+
+fn current_host_session_ids() -> Vec<String> {
+    ["CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .filter(|session_id| !session_id.is_empty())
+        .collect()
+}
+
 fn claude_available(claude_dir: &std::path::Path) -> bool {
     claude_dir.join("projects").exists()
 }
@@ -472,4 +520,67 @@ fn resolve_home_dir() -> Result<PathBuf> {
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
         .ok_or_else(|| anyhow::anyhow!("HOME is not set; cannot determine skill install directory"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw_session(session_id: &str) -> RawSession {
+        RawSession {
+            session_id: session_id.to_string(),
+            project: "nippo".to_string(),
+            project_path: "/tmp/nippo".to_string(),
+            git_branch: Some("main".to_string()),
+            user_entries: Vec::new(),
+            assistant_entries: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn excludes_only_the_current_host_sessions() {
+        let mut sessions = vec![
+            raw_session("claude-current"),
+            raw_session("codex-current"),
+            raw_session("past-work"),
+        ];
+        let current_ids = ["claude-current".to_string(), "codex-current".to_string()];
+
+        retain_non_current_sessions(&mut sessions, &current_ids);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "past-work");
+    }
+
+    #[test]
+    fn prompt_noise_is_excluded_by_default_and_can_be_included() {
+        let default_cli = Cli::try_parse_from(["nippo", "collect"]).expect("parse defaults");
+        let Commands::Collect {
+            include_prompt_noise,
+            ..
+        } = default_cli.command
+        else {
+            panic!("expected collect command");
+        };
+        assert!(!include_prompt_noise);
+
+        let cli = Cli::try_parse_from([
+            "nippo",
+            "collect",
+            "--include-prompt-noise",
+            "--include-self",
+        ])
+        .expect("parse collect flags");
+
+        let Commands::Collect {
+            include_prompt_noise,
+            include_self,
+            ..
+        } = cli.command
+        else {
+            panic!("expected collect command");
+        };
+        assert!(include_prompt_noise);
+        assert!(include_self);
+    }
 }

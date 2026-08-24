@@ -196,9 +196,68 @@ nippo collect --source all --days 7              # Claude Code + Codex
 nippo collect --period last-week                 # 先週
 nippo collect --from 2026-03-01 --to 2026-03-15  # 日付範囲
 nippo collect --project ccswarm                  # プロジェクトフィルタ
+nippo collect --include-prompt-noise             # 除外前のプロンプトも確認
+nippo collect --include-self                     # 実行中のセッションも含める
 ```
 
 `--days` / `--from` / `--to` / `--period` の日付境界は、コマンドを実行した環境のローカルタイムゾーン基準。`--days 1` は「今日のローカル日付」を意味する。
+
+JSON の `meta.period` は、指定した日付範囲の両端と境界の基準になったタイムゾーンを返す。
+プロジェクト総数は重複する項目を持たず、`stats.projects_worked_on` の要素数から求める。
+
+```json
+{
+  "meta": {
+    "filter_label": "90 days",
+    "period": {
+      "from": "2026-05-27",
+      "to": "2026-08-24",
+      "timezone": "Asia/Tokyo"
+    }
+  }
+}
+```
+
+`--days 0` では両端が `null` になる。`--from` だけを指定した場合の終了日は今日、
+`--to` だけを指定した場合の開始日は `null` になる。
+
+同じ `session_id` の記録が複数ファイルに分かれている場合は、プロンプトを重複除去して
+1 セッションに統合する。Claude Code / Codex 内から実行したときは、ホストが公開する
+現在のセッション ID と完全一致する記録を既定で除外する。確認目的で含めたい場合だけ
+`--include-self` を指定する。
+
+既定では、スラッシュコマンド展開、ハーネス通知、画像プレースホルダ、中断通知、
+compact の導入文、短い肯定応答を `user_prompts` と user 側の集計から除外する。
+統合後に意味のある user prompt が一つも残らないセッションは、assistant 応答やツール使用を
+含めて集計対象から外す。同じ ID に通常の依頼がある分割記録は先に統合されるため残る。
+除外前のプロンプトを調査したい場合だけ `--include-prompt-noise` を指定する。
+
+JSON の `render_helpers` には、既存の `sessions` と `stats` から機械的に算出した表示補助が入る。
+
+```json
+{
+  "render_helpers": {
+    "sessions_local": [
+      {
+        "session_id": "abc123",
+        "project": "nippo",
+        "start_local": "2026-05-05T12:17:00+09:00",
+        "end_local": "2026-05-05T12:55:00+09:00"
+      }
+    ],
+    "main_work_window_local": {
+      "start": "2026-05-05T12:17:00+09:00",
+      "end": "2026-05-05T13:55:00+09:00",
+      "method": "longest_block_with_gaps_under_30_minutes"
+    },
+    "tool_frequency_top5": [{ "name": "Edit", "count": 3 }]
+  }
+}
+```
+
+`--stats-only` では `render_helpers.sessions_local` は空配列になり、集計用の主要時間帯と
+上位ツールだけを返す。文章の要約や判断の選択肢の推測は Rust 側では行わず、引き続き
+テンプレートを読む skill が担当する。
 
 ```
 期間: today | セッション: 48 | プロジェクト: 4 | 意思決定: 8

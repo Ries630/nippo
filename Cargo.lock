@@ -568,12 +568,13 @@ dependencies = [
 
 [[package]]
 name = "nippo"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
  "glob",
+ "iana-time-zone",
  "ratatui",
  "rayon",
  "rusqlite",
