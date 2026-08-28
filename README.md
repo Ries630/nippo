@@ -286,7 +286,8 @@ JSON の `meta.period` は、指定した日付範囲の両端と境界の基準
 `--include-self` を指定する。
 
 既定では、スラッシュコマンド展開、ハーネス通知、画像プレースホルダ、中断通知、
-compact の導入文、短い肯定応答を `user_prompts` と user 側の集計から除外する。
+compact の導入文、短い肯定応答、Codex rollout の実行コンテキストと agent history 差分を
+`user_prompts` と user 側の集計から除外する。
 統合後に意味のある user prompt が一つも残らないセッションは、assistant 応答やツール使用を
 含めて集計対象から外す。同じ ID に通常の依頼がある分割記録は先に統合されるため残る。
 除外前のプロンプトを調査したい場合だけ `--include-prompt-noise` を指定する。
@@ -363,7 +364,8 @@ JSON の `render_helpers` には、既存の `sessions` と `stats` から機械
     ▼
 [Rust] nippo collect
     ├─ ~/.claude/projects/**/*.jsonl を rayon で並列パース
-    ├─ ~/.codex/history.jsonl + state_5.sqlite + rollout データを収集
+    ├─ ~/.codex/state_5.sqlite + rollout データを収集
+    ├─ ~/.codex/history.jsonl があれば旧形式プロンプトを結合
     ├─ mtime プレフィルタ + 2パスデシリアライズ
     └─ JSON 出力
     │
