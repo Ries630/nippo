@@ -5,6 +5,9 @@
 reports/*.md
 reports/ledger.yaml
 reports/ledger.yaml.tmp
+reports/**/*.md
+reports/**/ledger.yaml
+reports/**/ledger.yaml.tmp
 !reports/.gitkeep
 
 # コレクター一時ファイル
