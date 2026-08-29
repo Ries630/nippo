@@ -481,7 +481,7 @@ fn claude_available(claude_dir: &std::path::Path) -> bool {
 }
 
 fn codex_available(codex_dir: &std::path::Path) -> bool {
-    codex_dir.join("history.jsonl").exists()
+    codex_dir.join("history.jsonl").exists() || codex_dir.join("state_5.sqlite").exists()
 }
 
 fn period_label(period: &Period) -> String {
@@ -560,6 +560,19 @@ mod tests {
 
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, "past-work");
+    }
+
+    #[test]
+    fn state_only_codex_install_is_available_for_auto_and_all_sources() {
+        let codex_dir = tempfile::tempdir().expect("create Codex tempdir");
+        std::fs::write(codex_dir.path().join("state_5.sqlite"), []).expect("write state DB");
+        let claude_dir = codex_dir.path().join("missing-claude");
+
+        let auto_sources = resolve_sources(&DataSource::Auto, &claude_dir, codex_dir.path());
+        let all_sources = resolve_sources(&DataSource::All, &claude_dir, codex_dir.path());
+
+        assert!(matches!(auto_sources.as_slice(), [DataSource::Codex]));
+        assert!(matches!(all_sources.as_slice(), [DataSource::Codex]));
     }
 
     #[test]

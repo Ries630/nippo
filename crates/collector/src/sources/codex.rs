@@ -1,8 +1,8 @@
 //! Codex 履歴のコレクター。
 //!
-//! `~/.codex/history.jsonl` の user prompt と
-//! `~/.codex/state_5.sqlite` の thread メタデータ / rollout_path を結合して、
-//! 日報生成に必要なセッション一覧へ変換する。
+//! `~/.codex/state_5.sqlite` の thread メタデータと rollout JSONL を主入力にし、
+//! `~/.codex/history.jsonl` の旧形式プロンプトも結合して、日報生成に必要な
+//! セッション一覧へ変換する。
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -30,23 +30,36 @@ struct ThreadMeta {
     cwd: String,
     git_branch: Option<String>,
     rollout_path: Option<PathBuf>,
+    first_user_message: Option<String>,
+    created_at: Option<i64>,
+}
+
+#[derive(Default)]
+struct RolloutEntries {
+    user_entries: Vec<ParsedUserEntry>,
+    assistant_entries: Vec<ParsedAssistantEntry>,
 }
 
 pub fn discover_history_files(codex_dir: &Path) -> Result<Vec<PathBuf>> {
     let history_path = codex_dir.join("history.jsonl");
-    if !history_path.exists() {
-        anyhow::bail!(
-            "Codex の履歴データが見つかりません: {}\n\n\
-             Codex を使用すると、user prompt 履歴は history.jsonl に保存されます。\n\
-             カスタムディレクトリを指定する場合は --codex-dir オプションを使用してください。",
-            history_path.display()
-        );
-    }
-
-    let mut files = vec![history_path];
     let state_path = codex_dir.join("state_5.sqlite");
+    let mut files = Vec::new();
+    if history_path.exists() {
+        files.push(history_path);
+    }
     if state_path.exists() {
         files.push(state_path);
+    }
+
+    if files.is_empty() {
+        anyhow::bail!(
+            "Codex の履歴データが見つかりません: {} / {}\n\n\
+             Codex を使用すると、履歴は history.jsonl または state_5.sqlite と \
+             rollout JSONL に保存されます。\n\
+             カスタムディレクトリを指定する場合は --codex-dir オプションを使用してください。",
+            codex_dir.join("history.jsonl").display(),
+            codex_dir.join("state_5.sqlite").display()
+        );
     }
 
     Ok(files)
@@ -81,7 +94,24 @@ fn load_thread_metadata(state_path: &Path) -> Result<HashMap<String, ThreadMeta>
     } else {
         "NULL AS rollout_path"
     };
-    let query = format!("SELECT id, cwd, git_branch, {rollout_column} FROM threads");
+    let first_user_message_column = if columns.contains("first_user_message") {
+        "first_user_message"
+    } else {
+        "NULL AS first_user_message"
+    };
+    let created_at_column = match (
+        columns.contains("created_at_ms"),
+        columns.contains("created_at"),
+    ) {
+        (true, true) => "COALESCE(created_at_ms / 1000, created_at)",
+        (true, false) => "created_at_ms / 1000",
+        (false, true) => "created_at",
+        (false, false) => "NULL AS created_at",
+    };
+    let query = format!(
+        "SELECT id, cwd, git_branch, {rollout_column}, \
+         {first_user_message_column}, {created_at_column} FROM threads"
+    );
     let mut stmt = conn
         .prepare(&query)
         .context("Failed to prepare Codex thread metadata query")?;
@@ -97,6 +127,10 @@ fn load_thread_metadata(state_path: &Path) -> Result<HashMap<String, ThreadMeta>
                         .get::<_, Option<String>>(3)?
                         .filter(|path| !path.is_empty())
                         .map(PathBuf::from),
+                    first_user_message: row
+                        .get::<_, Option<String>>(4)?
+                        .filter(|message| !message.trim().is_empty()),
+                    created_at: row.get::<_, Option<i64>>(5)?,
                 },
             ))
         })
@@ -131,13 +165,13 @@ fn unix_seconds_to_rfc3339(timestamp: i64) -> Option<String> {
     DateTime::<Utc>::from_timestamp(timestamp, 0).map(|dt| dt.to_rfc3339())
 }
 
-fn collect_rollout_entries(rollout_path: &Path, filter: &DateFilter) -> Vec<ParsedAssistantEntry> {
+fn collect_rollout_entries(rollout_path: &Path, filter: &DateFilter) -> RolloutEntries {
     let file = match File::open(rollout_path) {
         Ok(file) => file,
-        Err(_) => return Vec::new(),
+        Err(_) => return RolloutEntries::default(),
     };
     let reader = BufReader::new(file);
-    let mut entries = Vec::new();
+    let mut entries = RolloutEntries::default();
 
     for line in reader.lines() {
         let line = match line {
@@ -164,12 +198,20 @@ fn collect_rollout_entries(rollout_path: &Path, filter: &DateFilter) -> Vec<Pars
         match value.get("type").and_then(Value::as_str) {
             Some("response_item") => {
                 if let Some(payload) = value.get("payload") {
-                    entries.extend(extract_response_item_entries(timestamp, payload));
+                    if let Some(user_entry) = extract_response_item_user_entry(timestamp, payload) {
+                        entries.user_entries.push(user_entry);
+                    } else {
+                        entries
+                            .assistant_entries
+                            .extend(extract_response_item_entries(timestamp, payload));
+                    }
                 }
             }
             Some("event_msg") => {
                 if let Some(payload) = value.get("payload") {
-                    entries.extend(extract_event_entries(timestamp, payload));
+                    entries
+                        .assistant_entries
+                        .extend(extract_event_entries(timestamp, payload));
                 }
             }
             _ => {}
@@ -177,6 +219,42 @@ fn collect_rollout_entries(rollout_path: &Path, filter: &DateFilter) -> Vec<Pars
     }
 
     entries
+}
+
+fn extract_response_item_user_entry(timestamp: &str, payload: &Value) -> Option<ParsedUserEntry> {
+    if payload.get("type").and_then(Value::as_str) != Some("message")
+        || payload.get("role").and_then(Value::as_str) != Some("user")
+    {
+        return None;
+    }
+
+    let content = payload.get("content")?;
+    let text = match content {
+        Value::String(text) => text.trim().to_string(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter(|block| {
+                matches!(
+                    block.get("type").and_then(Value::as_str),
+                    Some("input_text" | "text")
+                )
+            })
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return None,
+    };
+
+    if text.is_empty() {
+        return None;
+    }
+
+    Some(ParsedUserEntry {
+        timestamp: timestamp.to_string(),
+        text: truncate(&text, MAX_PROMPT_LEN),
+    })
 }
 
 fn extract_response_item_entries(timestamp: &str, payload: &Value) -> Vec<ParsedAssistantEntry> {
@@ -318,55 +396,93 @@ pub fn collect_sessions(codex_dir: &Path, filter: &DateFilter) -> Result<Vec<Raw
     let state_path = codex_dir.join("state_5.sqlite");
     let thread_metadata = load_thread_metadata(&state_path)?;
 
-    let file = File::open(&history_path)
-        .with_context(|| format!("Failed to open {}", history_path.display()))?;
-    let reader = BufReader::new(file);
-
     let mut grouped_entries: HashMap<String, Vec<ParsedUserEntry>> = HashMap::new();
+    let mut grouped_assistant_entries: HashMap<String, Vec<ParsedAssistantEntry>> = HashMap::new();
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
+    if history_path.exists() {
+        let file = File::open(&history_path)
+            .with_context(|| format!("Failed to open {}", history_path.display()))?;
+        let reader = BufReader::new(file);
 
-        if line.trim().is_empty() {
-            continue;
+        for line in reader.lines() {
+            let line = match line {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let entry: HistoryEntry = match serde_json::from_str(&line) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            let trimmed = entry.text.trim();
+            if trimmed.is_empty() || !filter.matches_unix_seconds(entry.ts) {
+                continue;
+            }
+
+            let Some(timestamp) = unix_seconds_to_rfc3339(entry.ts) else {
+                continue;
+            };
+
+            grouped_entries
+                .entry(entry.session_id)
+                .or_default()
+                .push(ParsedUserEntry {
+                    timestamp,
+                    text: truncate(trimmed, MAX_PROMPT_LEN),
+                });
         }
+    }
 
-        let entry: HistoryEntry = match serde_json::from_str(&line) {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-
-        let trimmed = entry.text.trim();
-        if trimmed.is_empty() || !filter.matches_unix_seconds(entry.ts) {
-            continue;
+    for (session_id, meta) in &thread_metadata {
+        let rollout_entries = meta
+            .rollout_path
+            .as_deref()
+            .map(|rollout_path| collect_rollout_entries(rollout_path, filter))
+            .unwrap_or_default();
+        let has_rollout_user_entries = !rollout_entries.user_entries.is_empty();
+        if !rollout_entries.user_entries.is_empty() {
+            grouped_entries
+                .entry(session_id.clone())
+                .or_default()
+                .extend(rollout_entries.user_entries);
         }
-
-        let Some(timestamp) = unix_seconds_to_rfc3339(entry.ts) else {
-            continue;
-        };
-
-        grouped_entries
-            .entry(entry.session_id)
-            .or_default()
-            .push(ParsedUserEntry {
-                timestamp,
-                text: truncate(trimmed, MAX_PROMPT_LEN),
-            });
+        if !rollout_entries.assistant_entries.is_empty() {
+            grouped_assistant_entries.insert(session_id.clone(), rollout_entries.assistant_entries);
+        }
+        if !has_rollout_user_entries
+            && grouped_entries
+                .get(session_id)
+                .is_none_or(|entries| entries.is_empty())
+            && let (Some(message), Some(created_at)) =
+                (meta.first_user_message.as_deref(), meta.created_at)
+            && filter.matches_unix_seconds(created_at)
+            && let Some(timestamp) = unix_seconds_to_rfc3339(created_at)
+        {
+            grouped_entries
+                .entry(session_id.clone())
+                .or_default()
+                .push(ParsedUserEntry {
+                    timestamp,
+                    text: truncate(message.trim(), MAX_PROMPT_LEN),
+                });
+        }
     }
 
     let mut sessions: Vec<RawSession> = grouped_entries
         .into_iter()
         .map(|(session_id, mut user_entries)| {
             user_entries.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+            deduplicate_user_entries(&mut user_entries);
 
             let meta = thread_metadata.get(&session_id);
             let project_path = meta.map(|value| value.cwd.clone()).unwrap_or_default();
-            let assistant_entries = meta
-                .and_then(|value| value.rollout_path.as_deref())
-                .map(|path| collect_rollout_entries(path, filter))
+            let assistant_entries = grouped_assistant_entries
+                .remove(&session_id)
                 .unwrap_or_default();
             let project = if project_path.is_empty() {
                 "unknown".to_string()
@@ -402,6 +518,16 @@ pub fn collect_sessions(codex_dir: &Path, filter: &DateFilter) -> Result<Vec<Raw
     Ok(sessions)
 }
 
+fn deduplicate_user_entries(entries: &mut Vec<ParsedUserEntry>) {
+    let mut seen = HashSet::new();
+    entries.retain(|entry| {
+        let timestamp = DateTime::parse_from_rfc3339(&entry.timestamp)
+            .map(|value| value.timestamp().to_string())
+            .unwrap_or_else(|_| entry.timestamp.clone());
+        seen.insert((timestamp, entry.text.clone()))
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,6 +536,196 @@ mod tests {
     use rusqlite::Connection;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn collects_user_prompts_from_paginated_rollout_when_history_is_empty() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("history.jsonl"), "").expect("write history");
+        let rollout_path = dir.path().join("rollout-thread-1.jsonl");
+        fs::write(
+            &rollout_path,
+            concat!(
+                "{\"timestamp\":\"2026-04-14T05:26:39Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"rollout prompt\"}]}}\n",
+                "{\"timestamp\":\"2026-04-14T05:26:40Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"working\"}]}}\n"
+            ),
+        )
+        .expect("write rollout");
+
+        let conn = Connection::open(dir.path().join("state_5.sqlite")).expect("open sqlite");
+        conn.execute(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                cwd TEXT NOT NULL,
+                git_branch TEXT,
+                rollout_path TEXT,
+                history_mode TEXT
+            )",
+            [],
+        )
+        .expect("create table");
+        conn.execute(
+            "INSERT INTO threads (id, cwd, git_branch, rollout_path, history_mode)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                "thread-1",
+                "/tmp/nippo",
+                "main",
+                rollout_path.to_string_lossy().as_ref(),
+                "paginated",
+            ),
+        )
+        .expect("insert thread");
+
+        let sessions =
+            collect_sessions(dir.path(), &DateFilter::from_days(0)).expect("collect sessions");
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "thread-1");
+        assert_eq!(sessions[0].user_entries.len(), 1);
+        assert_eq!(sessions[0].user_entries[0].text, "rollout prompt");
+        assert_eq!(summarize_session(&sessions[0]).message_counts.assistant, 1);
+    }
+
+    #[test]
+    fn collects_user_prompts_from_state_when_history_file_is_missing() {
+        let dir = tempdir().expect("tempdir");
+        let rollout_path = dir.path().join("rollout-thread-1.jsonl");
+        fs::write(
+            &rollout_path,
+            "{\"timestamp\":\"2026-04-14T05:26:39Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"state prompt\"}]}}\n",
+        )
+        .expect("write rollout");
+
+        let state_path = dir.path().join("state_5.sqlite");
+        let conn = Connection::open(&state_path).expect("open sqlite");
+        conn.execute(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                cwd TEXT NOT NULL,
+                git_branch TEXT,
+                rollout_path TEXT
+            )",
+            [],
+        )
+        .expect("create table");
+        conn.execute(
+            "INSERT INTO threads (id, cwd, git_branch, rollout_path)
+             VALUES (?1, ?2, ?3, ?4)",
+            (
+                "thread-1",
+                "/tmp/nippo",
+                "main",
+                rollout_path.to_string_lossy().as_ref(),
+            ),
+        )
+        .expect("insert thread");
+
+        assert_eq!(
+            discover_history_files(dir.path()).expect("discover files"),
+            vec![state_path]
+        );
+        let sessions =
+            collect_sessions(dir.path(), &DateFilter::from_days(0)).expect("collect sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].user_entries[0].text, "state prompt");
+    }
+
+    #[test]
+    fn falls_back_to_first_user_message_when_rollout_has_no_user_message() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("history.jsonl"), "").expect("write history");
+        let rollout_path = dir.path().join("rollout-thread-1.jsonl");
+        fs::write(
+            &rollout_path,
+            "{\"timestamp\":\"2026-04-14T05:26:40Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"working\"}]}}\n",
+        )
+        .expect("write rollout");
+
+        let conn = Connection::open(dir.path().join("state_5.sqlite")).expect("open sqlite");
+        conn.execute(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                cwd TEXT NOT NULL,
+                git_branch TEXT,
+                rollout_path TEXT,
+                first_user_message TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        )
+        .expect("create table");
+        conn.execute(
+            "INSERT INTO threads (
+                id, cwd, git_branch, rollout_path, first_user_message, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (
+                "thread-1",
+                "/tmp/nippo",
+                "main",
+                rollout_path.to_string_lossy().as_ref(),
+                "fallback prompt",
+                1_776_144_399_i64,
+            ),
+        )
+        .expect("insert thread");
+
+        let sessions =
+            collect_sessions(dir.path(), &DateFilter::from_days(0)).expect("collect sessions");
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].user_entries.len(), 1);
+        assert_eq!(sessions[0].user_entries[0].text, "fallback prompt");
+        assert_eq!(
+            sessions[0].user_entries[0].timestamp,
+            "2026-04-14T05:26:39+00:00"
+        );
+    }
+
+    #[test]
+    fn deduplicates_same_prompt_from_history_and_rollout() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("history.jsonl"),
+            "{\"session_id\":\"thread-1\",\"ts\":1776144399,\"text\":\"same prompt\"}\n",
+        )
+        .expect("write history");
+        let rollout_path = dir.path().join("rollout-thread-1.jsonl");
+        fs::write(
+            &rollout_path,
+            "{\"timestamp\":\"2026-04-14T05:26:39.500Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"same prompt\"}]}}\n",
+        )
+        .expect("write rollout");
+
+        let conn = Connection::open(dir.path().join("state_5.sqlite")).expect("open sqlite");
+        conn.execute(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                cwd TEXT NOT NULL,
+                git_branch TEXT,
+                rollout_path TEXT
+            )",
+            [],
+        )
+        .expect("create table");
+        conn.execute(
+            "INSERT INTO threads (id, cwd, git_branch, rollout_path)
+             VALUES (?1, ?2, ?3, ?4)",
+            (
+                "thread-1",
+                "/tmp/nippo",
+                "main",
+                rollout_path.to_string_lossy().as_ref(),
+            ),
+        )
+        .expect("insert thread");
+
+        let sessions =
+            collect_sessions(dir.path(), &DateFilter::from_days(0)).expect("collect sessions");
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].user_entries.len(), 1);
+        assert_eq!(sessions[0].user_entries[0].text, "same prompt");
+    }
 
     #[test]
     fn collects_codex_history_with_thread_metadata() {

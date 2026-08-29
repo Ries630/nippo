@@ -132,6 +132,12 @@ pub(crate) fn is_meaningful_prompt(text: &str) -> bool {
         "This session is being continued from a previous conversation",
         "Base directory for this skill:",
         "(Re-invocation of /",
+        "# AGENTS.md instructions",
+        "<environment_context>",
+        "<recommended_plugins>",
+        "<skill>",
+        "<app-context>",
+        "The following is the Codex agent history",
     ];
 
     let trimmed = text.trim();
@@ -475,6 +481,12 @@ mod tests {
             "This session is being continued from a previous conversation that ran out of context.",
             "Base directory for this skill: /tmp/example",
             "(Re-invocation of /nippo)",
+            "# AGENTS.md instructions\n\n<INSTRUCTIONS>...</INSTRUCTIONS>",
+            "<environment_context>...</environment_context>",
+            "<recommended_plugins>...</recommended_plugins>",
+            "<skill>...</skill>",
+            "<app-context>...</app-context>",
+            "The following is the Codex agent history added since your last message:",
             "y",
             "はい",
             "OK",

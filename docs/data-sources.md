@@ -91,9 +91,9 @@ user メッセージの content は `string`（単純テキスト）または `a
 ~/.codex/logs_2.sqlite
 ```
 
-- `history.jsonl`: user prompt 履歴。`nippo` での Codex 収集の主データソース
-- `state_5.sqlite`: thread の `cwd` / `git_branch` / `rollout_path` などのメタデータ
-- `rollout_path` が指す rollout JSONL: assistant メッセージ、ツール呼び出し、トークン使用量、変更ファイル
+- `state_5.sqlite`: thread 一覧と `cwd` / `git_branch` / `rollout_path` などのメタデータ。Codex 収集の起点
+- `rollout_path` が指す rollout JSONL: user / assistant メッセージ、ツール呼び出し、トークン使用量、変更ファイル。メッセージ収集の主データソース
+- `history.jsonl`: 旧形式の user prompt 履歴。存在する場合だけ互換入力として結合するが、全threadを含むとは限らない
 - `logs_2.sqlite`: 内部診断ログ。`nippo` では**日報の主データソースに使わない**
 
 ## Codex history.jsonl エントリ
@@ -113,13 +113,46 @@ user メッセージの content は `string`（単純テキスト）または `a
 ## Codex threads テーブル（使用列）
 
 ```sql
-SELECT id, cwd, git_branch, rollout_path FROM threads;
+SELECT
+  id,
+  cwd,
+  git_branch,
+  rollout_path,
+  first_user_message,
+  COALESCE(created_at_ms / 1000, created_at)
+FROM threads;
 ```
 
-- `id`: history の `session_id` と対応
+- `id`: rollout の thread ID、および存在する場合は history の `session_id` と対応
 - `cwd`: プロジェクトパス
 - `git_branch`: ブランチ名
-- `rollout_path`: assistant 側の rollout JSONL へのパス
+- `rollout_path`: user / assistant 側の rollout JSONL へのパス
+- `first_user_message`: rollout に user message がない場合のフォールバック
+- `created_at_ms` / `created_at`: フォールバックプロンプトの時刻
+
+列は Codex のバージョンによって存在しない場合があるため、コレクターは
+`PRAGMA table_info(threads)` で確認してから利用する。
+
+## Codex rollout の user message
+
+```json
+{
+  "timestamp": "2026-08-28T05:26:39.500Z",
+  "type": "response_item",
+  "payload": {
+    "type": "message",
+    "role": "user",
+    "content": [
+      { "type": "input_text", "text": "日報を生成して" }
+    ]
+  }
+}
+```
+
+- `response_item` のうち `payload.type = message` かつ `payload.role = user` だけを user prompt として収集する
+- `content` の `input_text` または `text` ブロックを連結する
+- 同じプロンプトが `history.jsonl` にもある場合は、同一秒・同一本文で重複を除く
+- rollout に user message がなく、thread に `first_user_message` と作成時刻がある場合だけフォールバックする
 
 ## コレクター CLI オプション
 
@@ -156,7 +189,8 @@ JSON の `meta.period.from` と `meta.period.to` は指定した日付範囲の�
 プロジェクト総数は `stats.projects_worked_on` の要素数から求める。
 
 既定では、スラッシュコマンド展開、ハーネス通知、画像プレースホルダ、中断通知、
-compact の導入文、短い肯定応答を user エントリから除外する。対応する assistant エントリは
+compact の導入文、短い肯定応答に加え、Codex rollout の AGENTS・environment・skill・
+plugin コンテキストと agent history 差分を user エントリから除外する。対応する assistant エントリは
 同じ ID の通常プロンプトと統合されている場合だけ、ツール使用や変更ファイルの集計に残る。
 統合後に意味のある user prompt がないセッションは、定期実行やコマンド展開だけの記録として
 セッション全体を除外する。除外前の記録が必要な場合は `--include-prompt-noise` を指定する。
