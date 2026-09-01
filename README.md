@@ -129,14 +129,23 @@ Claude Code では `/nippo ...`、Codex では `$nippo ...` を使う。引数�
 | コマンド        | 何を出すか                     | デフォルト期間 |
 | --------------- | ------------------------------ | -------------- |
 | `/nippo report` | 進捗報告（上司・メンター向け） | 7日            |
-| `/nippo review` | 自己評価（評価面談用）         | 90日           |
+| `/nippo review` | 自己評価（評価面談用、Markdown + HTML） | 90日           |
 
 ### 期間を俯瞰する
 
 | コマンド         | 何を出すか                   | デフォルト期間   |
 | ---------------- | ---------------------------- | ---------------- |
-| `/nippo insight` | 週・月単位の振り返り         | 7日              |
-| `/nippo trend`   | 長期の変化分析（三分割比較） | 90日（最低45日） |
+| `/nippo insight` | 週・月単位の振り返り（Markdown + HTML） | 7日              |
+| `/nippo trend`   | 長期の変化分析（三分割比較、Markdown + HTML） | 90日（最低45日） |
+
+### 自己完結 HTML レポート
+
+`review`、`insight`、`trend` は従来の Markdown に加え、同じ stem の HTML も生成する。
+HTML は本文、表、インライン SVG の視覚化を一つのファイルに含み、外部 CSS、JavaScript、
+画像、CDN へ依存しない。内容は先に保存した Markdown を正として決定論的に描画するため、
+HTML 側で別の分析や数値を追加しない。詳細は
+[HTML レポート契約](docs/html-reports.md) と
+[ADR-0001](docs/adr/0001-render-html-from-markdown.md) を参照。
 
 ### 詰まりを累積で追う
 
@@ -257,7 +266,11 @@ nippo collect --from 2026-03-01 --to 2026-03-15  # 日付範囲
 nippo collect --project ccswarm                  # プロジェクトフィルタ
 nippo collect --include-prompt-noise             # 除外前のプロンプトも確認
 nippo collect --include-self                     # 実行中のセッションも含める
+nippo render-html --mode trend --input reports/trend-2026-08-24-90d.md
 ```
+
+`render-html` は `trend`、`insight`、`review` の生成済み Markdown を受け取り、同じ stem の
+HTML を書き出す。通常は skill が Markdown 保存後に自動実行する。
 
 `--days` / `--from` / `--to` / `--period` の日付境界は、コマンドを実行した環境のローカルタイムゾーン基準。`--days 1` は「今日のローカル日付」を意味する。
 
@@ -373,7 +386,12 @@ JSON の `render_helpers` には、既存の `sessions` と `stats` から機械
 [Claude] テンプレートに従いレポート生成
     │
     ▼
-reports/ に保存
+reports/ に Markdown を保存
+    │
+    ├─ trend / insight / review
+    │    └─ [Rust] 同じ内容の自己完結 HTML を生成
+    ▼
+完了
 ```
 
 ```
@@ -395,6 +413,8 @@ nippo/
 ├── docs/
 │   ├── templates/            # 各モードのテンプレート
 │   ├── reflection-theory.md  # リフレクション理論
+│   ├── html-reports.md       # HTML レポート契約
+│   ├── adr/                  # 設計判断
 │   └── data-sources.md       # JSONL 仕様
 └── .github/workflows/ci.yml  # CI
 ```
@@ -410,12 +430,14 @@ nippo/
 | `plan-template.md`       | 前日の経験を今日の行動実験へつなぐ足場               |
 | `guide-template.md`      | フィードバックの視点（シニア・CTO 等の変更・追加）   |
 | `report-template.md`     | 進捗報告のフォーマット（社内テンプレートに合わせる） |
-| `review-template.md`     | 自己評価の構造                                       |
-| `insight-template.md`    | 振り返りの分析フレーム                               |
-| `trend-template.md`      | 変化分析の比較観点                                   |
+| `review-template.md`     | 自己評価の構造（HTML は保存後に同じ内容から生成）    |
+| `insight-template.md`    | 振り返りの分析フレーム（同上）                       |
+| `trend-template.md`      | 変化分析の比較観点（同上）                           |
 | `reflection-theory.md`   | 参照するリフレクション理論                           |
 
 テンプレートの編集に Rust の再ビルドは不要。シンボリックリンクで配置していれば、ファイルを編集するだけで即反映される。
+ただし `review`、`insight`、`trend` の視覚化対象となる見出し・表構造を変える場合は、
+[HTML レポート契約](docs/html-reports.md) に従ってレンダラーとテストも更新する。
 
 ## Claude Code `/insights` との関係
 

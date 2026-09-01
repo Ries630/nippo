@@ -48,6 +48,14 @@ const SHARED_ASSETS: &[EmbeddedAsset] = &[
         relative_path: "docs/data-sources.md",
         contents: include_str!("../assets/docs/data-sources.md"),
     },
+    EmbeddedAsset {
+        relative_path: "docs/html-reports.md",
+        contents: include_str!("../assets/docs/html-reports.md"),
+    },
+    EmbeddedAsset {
+        relative_path: "docs/adr/0001-render-html-from-markdown.md",
+        contents: include_str!("../assets/docs/adr/0001-render-html-from-markdown.md"),
+    },
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -367,6 +375,21 @@ mod tests {
                 asset.relative_path
             );
         }
+    }
+
+    #[test]
+    fn both_skills_reference_the_shared_html_report_contract() {
+        for skill in [CLAUDE_SKILL, CODEX_SKILL] {
+            assert!(skill.contains("docs/html-reports.md"));
+            for mode in ["trend", "insight", "review"] {
+                assert!(skill.contains(mode), "skill does not mention {mode}");
+            }
+        }
+        assert!(
+            SHARED_ASSETS
+                .iter()
+                .any(|asset| asset.relative_path == "docs/html-reports.md")
+        );
     }
 
     #[test]

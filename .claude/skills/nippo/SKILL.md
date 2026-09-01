@@ -25,6 +25,7 @@ context: fork
 - レポートは日本語で出力する
 - 出力先は cwd の `reports/` 配下（なければ `mkdir -p reports`）
 - ファイル名: `reports/{モード}-YYYY-MM-DD.md`（期間 N>1 なら `-Nd` を付与）
+- `trend`、`insight`、`review` は Markdown 保存後に `${CLAUDE_SKILL_DIR}/docs/html-reports.md` の契約で同じ stem の自己完結 HTML も生成する
 - 日付境界は実行環境のローカルタイムゾーン基準。`--days 1` と `daily` は「今日のローカル日付」を意味する
 - デフォルト source は `auto`。Codex では `history.jsonl` と `state_5.sqlite`、および `rollout_path` が指す rollout データを使う。`logs_2.sqlite` は診断用で、日報の主データソースにはしない
 - このリポジトリ内で実行している場合は、グローバル `nippo` より `cargo run -q -p nippo -- collect ...` を優先する（ローカル実装が新しい可能性があるため）
@@ -99,9 +100,11 @@ reflection / guide / insight / plan は `${CLAUDE_SKILL_DIR}/docs/reflection-the
 reflection / guide は同日の `reports/nippo-YYYY-MM-DD.md` があれば Read する。
 
 4. テンプレートに従いレポートを Write で保存（日報モードは既存ファイルがあっても上書き）
-5. `rm -f tmp/nippo-raw.json` で収集 JSON を削除する
-6. パスとレポートの要点を簡潔に通知する。改善提案は後述の条件を満たす場合だけ続ける
-7. 日報（`Unclear points` セクションを含む）を生成した後は、`/nippo ledger` で詰まりを累積集計できることを一言案内する（自動では実行しない）
+5. `trend`、`insight`、`review` は `${CLAUDE_SKILL_DIR}/docs/html-reports.md` を Read し、その生成手順と失敗時の扱いに従う。モデルが HTML を独立生成してはならない
+6. HTML 生成に失敗した場合は `${CLAUDE_SKILL_DIR}/docs/html-reports.md` の失敗時の扱いに従う
+7. `rm -f tmp/nippo-raw.json` で収集 JSON を削除する。HTML 生成に失敗した場合も削除する
+8. 生成した全パスとレポートの要点を簡潔に通知する。改善提案は後述の条件を満たす場合だけ続ける
+9. 日報（`Unclear points` セクションを含む）を生成した後は、`/nippo ledger` で詰まりを累積集計できることを一言案内する（自動では実行しない）
 
 ## 改善提案と Issue 作成
 
