@@ -1,11 +1,11 @@
 //! Markdown レポートを自己完結 HTML へ変換する。
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::ValueEnum;
 use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, TagEnd, html};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Eq, PartialEq)]
 struct ReportSubsection {
@@ -510,29 +510,21 @@ fn write_atomically(path: &Path, contents: &[u8]) -> Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .context("HTML output filename is not valid UTF-8")?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock is before UNIX epoch")?
-        .as_nanos();
-    let temporary = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
-
-    if let Err(error) = fs::write(&temporary, contents) {
-        let _ = fs::remove_file(&temporary);
-        return Err(error)
-            .with_context(|| format!("failed to write temporary HTML: {}", temporary.display()));
-    }
-    #[cfg(windows)]
-    if path.is_file() {
-        if let Err(error) = fs::remove_file(path) {
-            let _ = fs::remove_file(&temporary);
-            return Err(error)
-                .with_context(|| format!("failed to remove previous HTML: {}", path.display()));
-        }
-    }
-    if let Err(error) = fs::rename(&temporary, path) {
-        let _ = fs::remove_file(&temporary);
-        bail!("failed to replace HTML report {}: {error}", path.display());
-    }
+    let mut temporary = tempfile::Builder::new()
+        .prefix(&format!(".{file_name}."))
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .with_context(|| format!("failed to create temporary HTML in {}", parent.display()))?;
+    temporary.write_all(contents).with_context(|| {
+        format!(
+            "failed to write temporary HTML: {}",
+            temporary.path().display()
+        )
+    })?;
+    temporary
+        .persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("failed to replace HTML report {}", path.display()))?;
     Ok(())
 }
 
