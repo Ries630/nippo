@@ -43,10 +43,12 @@ Examples:
    - [docs/templates/plan-template.md](docs/templates/plan-template.md)
 10. For `reflection`, `guide`, `insight`, and `plan`, also read [docs/reflection-theory.md](docs/reflection-theory.md).
 11. Save daily reports, including `daily`, to `reports/nippo-YYYY-MM-DD.md`. Other modes keep `reports/{mode}-YYYY-MM-DD.md`. Append `-Nd` when days > 1.
-12. In daily mode, treat the freshly collected JSON as the only source of truth. Do not read an existing `reports/nippo-YYYY-MM-DD.md` as input; overwrite it with the new report.
-13. Ground the daily report header and stats directly in `meta` and `stats`, use `meta.period` for the requested date range, and choose project sections from `stats.projects_worked_on` in order of `message_count`.
-14. After generating a daily report (which emits an `## Unclear points` section), suggest the user run `/nippo ledger` to fold today's stuck points into the cumulative streak signal — but do NOT run it automatically.
-15. Finish with the saved path and a concise report summary. Do not suggest collector changes for values already available directly or by simple derivation from the JSON.
+12. For `trend`, `insight`, and `review`, read and follow [docs/html-reports.md](docs/html-reports.md) after saving Markdown. Do not generate HTML independently with the model.
+13. If HTML rendering fails, follow the failure handling in [docs/html-reports.md](docs/html-reports.md).
+14. In daily mode, treat the freshly collected JSON as the only source of truth. Do not read an existing `reports/nippo-YYYY-MM-DD.md` as input; overwrite it with the new report.
+15. Ground the daily report header and stats directly in `meta` and `stats`, use `meta.period` for the requested date range, and choose project sections from `stats.projects_worked_on` in order of `message_count`.
+16. After generating a daily report (which emits an `## Unclear points` section), suggest the user run `/nippo ledger` to fold today's stuck points into the cumulative streak signal — but do NOT run it automatically.
+17. Finish with every saved path and a concise report summary. Do not suggest collector changes for values already available directly or by simple derivation from the JSON.
 
 ## Mode Defaults
 

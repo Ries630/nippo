@@ -3,9 +3,11 @@
 
 # 生成されたレポート（個人の作業ログ・内省を含むため公開しない）
 reports/*.md
+reports/*.html
 reports/ledger.yaml
 reports/ledger.yaml.tmp
 reports/**/*.md
+reports/**/*.html
 reports/**/ledger.yaml
 reports/**/ledger.yaml.tmp
 !reports/.gitkeep

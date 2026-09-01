@@ -1,4 +1,5 @@
 mod filter;
+mod html_report;
 mod ledger;
 #[cfg(feature = "tui")]
 mod ledger_tui;
@@ -13,6 +14,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::filter::{DateFilter, Period, local_timezone_name};
+use crate::html_report::{HtmlReportMode, render_file as render_html_file};
 use crate::output::{OutputPeriod, SourceMeta, build_output, format_summary};
 use crate::session::{
     RawSession, merge_sessions_by_id, retain_meaningful_prompts, sort_sessions_by_recency,
@@ -78,6 +80,8 @@ nippo スキルのデータ収集バックエンドとして動作する。
   nippo collect --source codex            Codex 履歴のみ
   nippo collect --include-prompt-noise --include-self
                                           除外前の記録を確認
+  nippo render-html --mode trend --input reports/trend-2026-08-24-90d.md
+                                          Markdown を自己完結 HTML 化
 
 スキルをセットアップする:
   nippo skill install                     Claude Code + Codex
@@ -156,6 +160,17 @@ enum Commands {
         /// Custom Codex data directory (default: ~/.codex)
         #[arg(long)]
         codex_dir: Option<PathBuf>,
+    },
+
+    /// 生成済み Markdown レポートを自己完結 HTML として描画する
+    RenderHtml {
+        /// 構造を視覚化するレポートモード
+        #[arg(long, value_enum)]
+        mode: HtmlReportMode,
+
+        /// 描画する生成済み Markdown レポート
+        #[arg(long)]
+        input: PathBuf,
     },
 
     /// Fold structured `## Unclear points` from past reports into a
@@ -310,6 +325,10 @@ fn run() -> Result<()> {
             export,
         } => {
             run_ledger(&reports_dir, out.as_deref(), tui, export)?;
+        }
+        Commands::RenderHtml { mode, input } => {
+            let output = render_html_file(mode, &input)?;
+            println!("html: {}", output.display());
         }
         Commands::Skill {
             action: SkillAction::Install { target, force },
