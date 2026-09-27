@@ -15,7 +15,9 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use crate::filter::DateFilter;
-use crate::session::{ParsedAssistantEntry, ParsedUserEntry, RawSession};
+use crate::session::{
+    ParsedAssistantEntry, ParsedUserEntry, RawSession, compact_screenpipe_context,
+};
 
 const MAX_PROMPT_LEN: usize = 500;
 
@@ -63,6 +65,11 @@ pub fn discover_history_files(codex_dir: &Path) -> Result<Vec<PathBuf>> {
     }
 
     Ok(files)
+}
+
+/// 保存用のプロンプト本文を作る。Screenpipe のシステム文を省いてから切り詰める。
+fn prompt_text(s: &str) -> String {
+    truncate(&compact_screenpipe_context(s), MAX_PROMPT_LEN)
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -253,7 +260,7 @@ fn extract_response_item_user_entry(timestamp: &str, payload: &Value) -> Option<
 
     Some(ParsedUserEntry {
         timestamp: timestamp.to_string(),
-        text: truncate(&text, MAX_PROMPT_LEN),
+        text: prompt_text(&text),
     })
 }
 
@@ -433,7 +440,7 @@ pub fn collect_sessions(codex_dir: &Path, filter: &DateFilter) -> Result<Vec<Raw
                 .or_default()
                 .push(ParsedUserEntry {
                     timestamp,
-                    text: truncate(trimmed, MAX_PROMPT_LEN),
+                    text: prompt_text(trimmed),
                 });
         }
     }
@@ -468,7 +475,7 @@ pub fn collect_sessions(codex_dir: &Path, filter: &DateFilter) -> Result<Vec<Raw
                 .or_default()
                 .push(ParsedUserEntry {
                     timestamp,
-                    text: truncate(message.trim(), MAX_PROMPT_LEN),
+                    text: prompt_text(message.trim()),
                 });
         }
     }
@@ -536,6 +543,21 @@ mod tests {
     use rusqlite::Connection;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn keeps_user_text_after_long_screenpipe_context() {
+        let context = format!(
+            "<screenpipe-system-context>\n{}\n</screenpipe-system-context>",
+            "tool guide ".repeat(MAX_PROMPT_LEN)
+        );
+
+        let text = prompt_text(&format!("{context}\n\nこんにちは！"));
+
+        assert_eq!(
+            text,
+            "<screenpipe-system-context></screenpipe-system-context>\n\nこんにちは！"
+        );
+    }
 
     #[test]
     fn collects_user_prompts_from_paginated_rollout_when_history_is_empty() {

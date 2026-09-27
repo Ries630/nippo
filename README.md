@@ -247,7 +247,9 @@ CLI セッションを開いたまま一時的に繰り返すだけなら、`/lo
 - Claude Code と Codex の両方を使う場合は、どちらか一方で `/nippo daily all` または
   `$nippo daily all` を定期実行する。同じ日付の日報を両方から作ると、後の実行結果で上書きされる。
 - 定期タスクの指示やスキル展開だけで終わるセッションは、既定のプロンプトノイズ除外の
-  対象になる。日報生成時は `--include-prompt-noise` や `--include-self` を付けない。
+  対象になる。Codex automation の `<heartbeat>` 指示と Screenpipe の pipe 実行も除外し、
+  同じスレッドで本人が入力したプロンプトは残す。日報生成時は `--include-prompt-noise` や
+  `--include-self` を付けない。
 
 ---
 

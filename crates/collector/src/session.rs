@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
@@ -138,6 +139,8 @@ pub(crate) fn is_meaningful_prompt(text: &str) -> bool {
         "<skill>",
         "<app-context>",
         "The following is the Codex agent history",
+        // Codex automation の定期実行はこのタグで指示を包む
+        "<heartbeat>",
     ];
 
     let trimmed = text.trim();
@@ -161,11 +164,63 @@ pub(crate) fn is_meaningful_prompt(text: &str) -> bool {
     )
 }
 
+const SCREENPIPE_CONTEXT_START: &str = "<screenpipe-system-context>";
+const SCREENPIPE_CONTEXT_END: &str = "</screenpipe-system-context>";
+
+/// Screenpipe のシステム文の本文を省き、タグと続く入力だけを残す。
+///
+/// システム文は1万文字を超えることがあり、プロンプトを切り詰めると続く本人の入力が失われるため、
+/// 切り詰めの前に呼ぶ。閉じタグがない場合は入力をそのまま返す。
+pub(crate) fn compact_screenpipe_context(text: &str) -> Cow<'_, str> {
+    let Some(rest) = text.trim_start().strip_prefix(SCREENPIPE_CONTEXT_START) else {
+        return Cow::Borrowed(text);
+    };
+    match rest.find(SCREENPIPE_CONTEXT_END) {
+        Some(index) => Cow::Owned(format!(
+            "{SCREENPIPE_CONTEXT_START}{SCREENPIPE_CONTEXT_END}{}",
+            &rest[index + SCREENPIPE_CONTEXT_END.len()..]
+        )),
+        None => Cow::Borrowed(text),
+    }
+}
+
+/// Screenpipe が先頭に付けるシステム文を除いた本文を返す。
+///
+/// システム文で始まらない場合は `None`。閉じタグがない場合は全体をシステム文とみなし、空文字列を返す。
+fn strip_screenpipe_context(text: &str) -> Option<&str> {
+    let rest = text.trim_start().strip_prefix(SCREENPIPE_CONTEXT_START)?;
+    Some(rest.find(SCREENPIPE_CONTEXT_END).map_or("", |index| {
+        rest[index + SCREENPIPE_CONTEXT_END.len()..].trim()
+    }))
+}
+
+/// Screenpipe の pipe・定期要約として実行されたセッションかを判定する。
+///
+/// Screenpipe は `~/.screenpipe/` 配下を作業ディレクトリにして Codex を起動する。
+/// 本人が入力する Screenpipe チャットの `pi-chat` だけを対象外にする。
+fn is_scheduled_screenpipe_path(project_path: &str) -> bool {
+    const MARKER: &str = "/.screenpipe/";
+
+    let normalized = project_path.replace('\\', "/");
+    normalized
+        .find(MARKER)
+        .and_then(|index| normalized[index + MARKER.len()..].split('/').next())
+        .is_some_and(|component| !component.is_empty() && component != "pi-chat")
+}
+
 pub(crate) fn retain_meaningful_prompts(sessions: &mut Vec<RawSession>) {
     for session in sessions.iter_mut() {
-        session
-            .user_entries
-            .retain(|entry| is_meaningful_prompt(&entry.text));
+        let scheduled_screenpipe = is_scheduled_screenpipe_path(&session.project_path);
+        session.user_entries.retain_mut(|entry| {
+            if let Some(user_text) = strip_screenpipe_context(&entry.text).map(str::to_owned) {
+                // pipe の本文は定期実行の指示なので残さない。チャットは本人の入力だけを残す
+                if scheduled_screenpipe {
+                    return false;
+                }
+                entry.text = user_text;
+            }
+            is_meaningful_prompt(&entry.text)
+        });
     }
     sessions.retain(|session| !session.user_entries.is_empty());
 }
@@ -487,6 +542,7 @@ mod tests {
             "<skill>...</skill>",
             "<app-context>...</app-context>",
             "The following is the Codex agent history added since your last message:",
+            "<heartbeat>\n  <automation_id>nippo</automation_id>\n</heartbeat>",
             "y",
             "はい",
             "OK",
@@ -542,5 +598,77 @@ mod tests {
         assert_eq!(sessions[0].user_entries.len(), 1);
         assert_eq!(sessions[0].user_entries[0].text, "Rust にする");
         assert_eq!(sessions[0].assistant_entries.len(), 1);
+    }
+
+    fn session_at(session_id: &str, project_path: &str, texts: &[&str]) -> RawSession {
+        let mut session = raw_session(
+            session_id,
+            session_id,
+            texts
+                .iter()
+                .map(|text| user_entry("2026-09-23T10:00:00Z", text))
+                .collect(),
+            vec![],
+        );
+        session.project_path = project_path.to_string();
+        session
+    }
+
+    #[test]
+    fn removes_scheduled_runs_and_keeps_manual_prompts() {
+        let context = "<screenpipe-system-context>\nYou are running inside screenpipe.\n</screenpipe-system-context>";
+        let mut sessions = vec![
+            session_at(
+                "screenpipe-pipe",
+                "/Users/u/.screenpipe/pipes/chronos-time-tracker",
+                &[&format!("{context}\n\nBuild a timeline")],
+            ),
+            session_at(
+                "screenpipe-summary",
+                "/Users/u/.screenpipe/pi-daily-summary",
+                &[&format!("{context}\n\nBuild a timeline")],
+            ),
+            session_at(
+                "screenpipe-windows-pipe",
+                r"C:\Users\u\.screenpipe\pipes\time-breakdown",
+                &[&format!("{context}\n\nBuild a timeline")],
+            ),
+            session_at(
+                "screenpipe-chat",
+                "/Users/u/.screenpipe/pi-chat",
+                &[&format!("{context}\n\nこんにちは！"), "続きを調べて"],
+            ),
+            session_at(
+                "automation-thread",
+                "/Users/u/obsidian",
+                &[
+                    "<heartbeat>\n  <automation_id>obsidian</automation_id>\n</heartbeat>",
+                    "もう一度試して",
+                ],
+            ),
+        ];
+
+        retain_meaningful_prompts(&mut sessions);
+
+        let kept: Vec<(&str, Vec<&str>)> = sessions
+            .iter()
+            .map(|session| {
+                (
+                    session.session_id.as_str(),
+                    session
+                        .user_entries
+                        .iter()
+                        .map(|entry| entry.text.as_str())
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            kept,
+            vec![
+                ("screenpipe-chat", vec!["こんにちは！", "続きを調べて"]),
+                ("automation-thread", vec!["もう一度試して"]),
+            ]
+        );
     }
 }
