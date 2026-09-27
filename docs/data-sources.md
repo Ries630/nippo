@@ -190,7 +190,16 @@ JSON の `meta.period.from` と `meta.period.to` は指定した日付範囲の�
 
 既定では、スラッシュコマンド展開、ハーネス通知、画像プレースホルダ、中断通知、
 compact の導入文、短い肯定応答に加え、Codex rollout の AGENTS・environment・skill・
-plugin コンテキストと agent history 差分を user エントリから除外する。対応する assistant エントリは
+plugin コンテキストと agent history 差分を user エントリから除外する。Codex automation の定期実行が
+送る `<heartbeat>` 指示も除外し、同じスレッドで本人が入力したプロンプトは残す。
+
+Screenpipe が Codex を起動した記録は、先頭の `<screenpipe-system-context>` で判別する。
+作業ディレクトリが `~/.screenpipe/` 配下の pipe や定期要約（`pi-chat` 以外）であれば、
+その user エントリを定期実行の指示として除外する。`~/.screenpipe/pi-chat` のチャットでは
+システム文だけを取り除き、続く本人の入力を残す。システム文は1万文字を超えることがあるため、Codex の収集時に
+本文を省いてタグだけを残し、500 文字の切り詰めで本人の入力が失われないようにしている。
+
+除外した user エントリに対応する assistant エントリは、
 同じ ID の通常プロンプトと統合されている場合だけ、ツール使用や変更ファイルの集計に残る。
 統合後に意味のある user prompt がないセッションは、定期実行やコマンド展開だけの記録として
 セッション全体を除外する。除外前の記録が必要な場合は `--include-prompt-noise` を指定する。
